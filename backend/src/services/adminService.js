@@ -1,315 +1,424 @@
-const dynamodb = require('../adapters/dynamodb');
+const db = require('../adapters/database');
 const emailAdapter = require('../adapters/email');
-const authService = require('./authService');
-const { generateInviteCode, getISOTimestamp, getExpiresAtTimestampHours, parseCursor, encodeCursor } = require('../utils/helpers');
-const { NotFoundError, ConflictError, BadRequestError } = require('../utils/errors');
+const { 
+  generateId, 
+  generateInviteCode, 
+  getCurrentTimestamp, 
+  getFutureTimestamp,
+  calculatePagination,
+  formatPaginationResponse
+} = require('../utils/helpers');
+const { NotFoundError, ValidationError, UnauthorizedError, ConflictError } = require('../utils/errors');
 
 class AdminService {
-  async listUsers(query = '', role = '', status = '', cursor = null, limit = 20) {
-    let users = [];
-    let lastEvaluatedKey = null;
 
-    if (role) {
-      const roleUsers = await dynamodb.queryGSI('GSI3', {
-        KeyConditionExpression: 'GSI3PK = :role',
-        ExpressionAttributeValues: {
-          ':role': `ROLE#${role}`
-        }
-      });
+  /**
+   * Create audit log entry
+   */
+  async createAuditLog(actorId, action, resourceType, resourceId = null, metadata = null, req = null) {
+    const logData = {
+      log_id: generateId(),
+      actor_id: actorId,
+      action,
+      resource_type: resourceType,
+      resource_id: resourceId,
+      metadata,
+      ip_address: req ? req.ip : null,
+      user_agent: req ? req.get('User-Agent') : null,
+      created_at: getCurrentTimestamp()
+    };
 
-      const userIds = roleUsers.items.map(item => item.GSI3SK.replace('USER#', ''));
-      
-      for (const userId of userIds) {
-        const user = await dynamodb.get(`USER#${userId}`, 'PROFILE');
-        if (user) {
-          const roles = await authService.getUserRoles(userId);
-          users.push({
-            userId: user.userId,
-            email: user.email,
-            displayName: user.displayName,
-            roles,
-            status: user.status,
-            emailVerified: user.emailVerified,
-            createdAt: user.createdAt
-          });
-        }
-      }
-    } else {
-      const scanResult = await dynamodb.query({
-        KeyConditionExpression: 'begins_with(PK, :userPrefix) AND SK = :profile',
-        ExpressionAttributeValues: {
-          ':userPrefix': 'USER#',
-          ':profile': 'PROFILE'
-        },
-        Limit: limit,
-        ExclusiveStartKey: cursor ? parseCursor(cursor) : undefined
-      });
+    return await db.createAuditLog(logData);
+  }
 
-      lastEvaluatedKey = scanResult.lastEvaluatedKey;
-
-      for (const user of scanResult.items) {
-        const roles = await authService.getUserRoles(user.userId);
-        users.push({
-          userId: user.userId,
-          email: user.email,
-          displayName: user.displayName,
-          roles,
-          status: user.status,
-          emailVerified: user.emailVerified,
-          createdAt: user.createdAt
-        });
-      }
-    }
-
-    if (query) {
-      const queryLower = query.toLowerCase();
-      users = users.filter(user => 
-        user.email.toLowerCase().includes(queryLower) ||
-        user.displayName.toLowerCase().includes(queryLower) ||
-        user.userId.toLowerCase().includes(queryLower)
-      );
-    }
-
-    if (status) {
-      users = users.filter(user => user.status === status);
-    }
-
-    users.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  /**
+   * Get dashboard statistics
+   */
+  async getDashboardStats() {
+    const totalUsers = await db.listUsers({ limit: 1 });
+    const activeUsers = await db.listUsers({ status: 'active', limit: 1 });
+    const pendingInvites = await db.listInvites({ status: 'pending', limit: 1 });
+    
+    // Get recent activity (last 24 hours)
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const recentActivity = await db.listAuditLogs({
+      startDate: yesterday.toISOString(),
+      limit: 10
+    });
 
     return {
-      items: users,
-      nextCursor: lastEvaluatedKey ? encodeCursor(lastEvaluatedKey) : null
+      users: {
+        total: totalUsers.total,
+        active: activeUsers.total,
+        inactive: totalUsers.total - activeUsers.total
+      },
+      invites: {
+        pending: pendingInvites.total
+      },
+      recentActivity: recentActivity.logs.map(log => ({
+        id: log.log_id,
+        actor: log.actor ? `${log.actor.first_name} ${log.actor.last_name}` : 'Unknown',
+        action: log.action,
+        resourceType: log.resource_type,
+        timestamp: log.created_at,
+        metadata: log.metadata
+      }))
     };
   }
 
-  async getUser(userId) {
-    const user = await dynamodb.get(`USER#${userId}`, 'PROFILE');
+  /**
+   * List all users with pagination
+   */
+  async listUsers(options = {}) {
+    const { page = 1, limit = 20, status, role } = options;
+    const { offset } = calculatePagination(page, limit);
+
+    const result = await db.listUsers({ offset, limit, status, role });
     
+    return formatPaginationResponse(
+      result.users.map(user => ({
+        userId: user.user_id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        roles: user.roles,
+        status: user.status,
+        emailVerified: user.email_verified,
+        lastLogin: user.last_login,
+        loginCount: user.login_count,
+        createdAt: user.created_at,
+        updatedAt: user.updated_at
+      })),
+      result.total,
+      parseInt(page),
+      parseInt(limit)
+    );
+  }
+
+  /**
+   * Get user details
+   */
+  async getUserDetails(userId) {
+    const user = await db.getUserById(userId);
     if (!user) {
       throw new NotFoundError('User not found');
     }
 
-    const roles = await authService.getUserRoles(userId);
-    
-    const sessions = await dynamodb.query({
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-      ExpressionAttributeValues: {
-        ':pk': `USER#${userId}`,
-        ':sk': 'SESSION#'
-      }
-    });
+    const sessions = await db.getUserSessions(userId);
+    const auditLogs = await db.listAuditLogs({ actorId: userId, limit: 20 });
 
     return {
       user: {
-        userId: user.userId,
+        userId: user.user_id,
         email: user.email,
-        displayName: user.displayName,
-        roles,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        roles: user.roles,
         status: user.status,
-        emailVerified: user.emailVerified,
-        createdAt: user.createdAt
+        emailVerified: user.email_verified,
+        lastLogin: user.last_login,
+        loginCount: user.login_count,
+        createdAt: user.created_at,
+        updatedAt: user.updated_at
       },
-      sessions: sessions.items.map(session => ({
-        sessionId: session.sessionId,
-        createdAt: session.createdAt,
-        expiresAt: session.expiresAt,
-        ip: session.ip,
-        ua: session.ua
+      sessions: sessions.map(session => ({
+        sessionId: session.session_id,
+        createdAt: session.created_at,
+        updatedAt: session.updated_at,
+        expiresAt: session.expires_at,
+        ipAddress: session.ip_address,
+        userAgent: session.user_agent,
+        isActive: session.is_active
+      })),
+      auditLogs: auditLogs.logs.map(log => ({
+        id: log.log_id,
+        action: log.action,
+        resourceType: log.resource_type,
+        resourceId: log.resource_id,
+        metadata: log.metadata,
+        timestamp: log.created_at
       }))
     };
   }
 
-  async updateUser(userId, updates, actorUserId) {
-    const user = await dynamodb.get(`USER#${userId}`, 'PROFILE');
-    
+  /**
+   * Update user
+   */
+  async updateUser(adminId, userId, updates, req) {
+    const user = await db.getUserById(userId);
     if (!user) {
       throw new NotFoundError('User not found');
     }
 
-    const updateExpressions = [];
-    const expressionAttributeValues = {};
+    const { firstName, lastName, roles, status } = updates;
+    const updateData = {};
+    
+    if (firstName !== undefined) updateData.first_name = firstName;
+    if (lastName !== undefined) updateData.last_name = lastName;
+    if (roles !== undefined) updateData.roles = roles;
+    if (status !== undefined) updateData.status = status;
+    
+    updateData.updated_at = getCurrentTimestamp();
 
-    if (updates.displayName !== undefined) {
-      updateExpressions.push('displayName = :displayName');
-      expressionAttributeValues[':displayName'] = updates.displayName;
+    const updated = await db.updateUser(userId, updateData);
+    if (!updated) {
+      throw new ValidationError('Failed to update user');
     }
 
-    if (updates.status !== undefined) {
-      updateExpressions.push('#status = :status');
-      expressionAttributeValues[':status'] = updates.status;
-    }
-
-    if (updateExpressions.length === 0) {
-      return { ok: true };
-    }
-
-    updateExpressions.push('updatedAt = :updatedAt');
-    expressionAttributeValues[':updatedAt'] = getISOTimestamp();
-
-    const expressionAttributeNames = updates.status !== undefined ? { '#status': 'status' } : undefined;
-
-    await dynamodb.update(
-      `USER#${userId}`,
-      'PROFILE',
-      `SET ${updateExpressions.join(', ')}`,
-      expressionAttributeNames,
-      expressionAttributeValues
+    // Log the action
+    await this.createAuditLog(
+      adminId,
+      'UPDATE_USER',
+      'user',
+      userId,
+      { updates },
+      req
     );
 
-    await authService.createAuditLog(actorUserId, 'UserUpdated', `USER#${userId}`, updates);
-
-    return { ok: true };
+    const updatedUser = await db.getUserById(userId);
+    return updatedUser.toJSON();
   }
 
-  async assignRole(userId, role, actorUserId) {
-    const user = await dynamodb.get(`USER#${userId}`, 'PROFILE');
-    
+  /**
+   * Delete user
+   */
+  async deleteUser(adminId, userId, req) {
+    const user = await db.getUserById(userId);
     if (!user) {
       throw new NotFoundError('User not found');
     }
 
-    const existingRole = await dynamodb.get(`USER#${userId}`, `ROLE#${role}`);
-    if (existingRole) {
-      throw new ConflictError('User already has this role');
+    // Prevent admin from deleting themselves
+    if (adminId === userId) {
+      throw new ValidationError('Cannot delete your own account');
     }
 
-    const roleItem = {
-      PK: `USER#${userId}`,
-      SK: `ROLE#${role}`,
-      role,
-      assignedBy: actorUserId,
-      createdAt: getISOTimestamp(),
-      GSI3PK: `ROLE#${role}`,
-      GSI3SK: `USER#${userId}`
-    };
+    const deleted = await db.deleteUser(userId);
+    if (!deleted) {
+      throw new ValidationError('Failed to delete user');
+    }
 
-    await dynamodb.put(roleItem);
+    // Log the action
+    await this.createAuditLog(
+      adminId,
+      'DELETE_USER',
+      'user',
+      userId,
+      { deletedUser: user.toJSON() },
+      req
+    );
 
-    await authService.createAuditLog(actorUserId, 'UserRoleAssigned', `USER#${userId}`, { role });
-
-    return { ok: true };
+    return { message: 'User deleted successfully' };
   }
 
-  async revokeRole(userId, role, actorUserId) {
-    const user = await dynamodb.get(`USER#${userId}`, 'PROFILE');
+  /**
+   * Create invite
+   */
+  async createInvite(adminId, { email, role = 'member' }, req) {
+    // Check if user already exists
+    const existingUser = await db.getUserByEmail(email);
+    if (existingUser) {
+      throw new ConflictError('User with this email already exists');
+    }
+
+    // Check if there's already a pending invite
+    const existingInvites = await db.listInvites({ status: 'pending' });
+    const existingInvite = existingInvites.invites.find(invite => invite.email === email);
     
-    if (!user) {
-      throw new NotFoundError('User not found');
+    if (existingInvite) {
+      throw new ConflictError('There is already a pending invite for this email');
     }
 
-    const existingRole = await dynamodb.get(`USER#${userId}`, `ROLE#${role}`);
-    if (!existingRole) {
-      throw new NotFoundError('User does not have this role');
-    }
+    const inviteCode = generateInviteCode();
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
 
-    if (role === 'member') {
-      throw new BadRequestError('Cannot revoke member role');
-    }
-
-    await dynamodb.delete(`USER#${userId}`, `ROLE#${role}`);
-
-    await authService.createAuditLog(actorUserId, 'UserRoleRevoked', `USER#${userId}`, { role });
-
-    return { ok: true };
-  }
-
-  async createInvite(role, expiresInHours = 72, actorUserId) {
-    const code = generateInviteCode();
-    const now = getISOTimestamp();
-    const expiresAt = getExpiresAtTimestampHours(expiresInHours);
-
-    const invite = {
-      PK: `INVITE#${code}`,
-      SK: 'META',
-      code,
+    const inviteData = {
+      invite_id: generateId(),
+      invite_code: inviteCode,
+      email,
       role,
-      createdBy: actorUserId,
-      createdAt: now,
-      expiresAt,
-      TTL: expiresAt
+      created_by: adminId,
+      status: 'pending',
+      expires_at: expiresAt,
+      created_at: getCurrentTimestamp(),
+      updated_at: getCurrentTimestamp()
     };
 
-    await dynamodb.put(invite);
+    const invite = await db.createInvite(inviteData);
 
-    await authService.createAuditLog(actorUserId, 'InviteCreated', `INVITE#${code}`, { role, expiresInHours });
+    // Send invite email
+    try {
+      await emailAdapter.sendInvite(invite, inviteCode);
+    } catch (error) {
+      console.error('Failed to send invite email:', error);
+      // Don't fail invite creation if email fails
+    }
+
+    // Log the action
+    await this.createAuditLog(
+      adminId,
+      'CREATE_INVITE',
+      'invite',
+      invite.invite_id,
+      { email, role },
+      req
+    );
 
     return {
-      code,
-      expiresAt
+      inviteId: invite.invite_id,
+      inviteCode,
+      email,
+      role,
+      expiresAt,
+      status: 'pending'
     };
   }
 
-  async listInvites(actorUserId) {
-    const invites = await dynamodb.query({
-      KeyConditionExpression: 'begins_with(PK, :invitePrefix) AND SK = :meta',
-      ExpressionAttributeValues: {
-        ':invitePrefix': 'INVITE#',
-        ':meta': 'META'
-      }
+  /**
+   * List invites
+   */
+  async listInvites(options = {}) {
+    const { page = 1, limit = 20, status, createdBy } = options;
+    const { offset } = calculatePagination(page, limit);
+
+    const result = await db.listInvites({ offset, limit, status, createdBy });
+    
+    return formatPaginationResponse(
+      result.invites.map(invite => ({
+        inviteId: invite.invite_id,
+        inviteCode: invite.invite_code,
+        email: invite.email,
+        role: invite.role,
+        status: invite.status,
+        createdBy: invite.creator ? `${invite.creator.first_name} ${invite.creator.last_name}` : 'Unknown',
+        acceptedBy: invite.acceptor ? `${invite.acceptor.first_name} ${invite.acceptor.last_name}` : null,
+        createdAt: invite.created_at,
+        expiresAt: invite.expires_at,
+        acceptedAt: invite.accepted_at
+      })),
+      result.total,
+      parseInt(page),
+      parseInt(limit)
+    );
+  }
+
+  /**
+   * Revoke invite
+   */
+  async revokeInvite(adminId, inviteId, req) {
+    const invite = await db.getInvite(inviteId);
+    if (!invite) {
+      throw new NotFoundError('Invite not found');
+    }
+
+    if (invite.status !== 'pending') {
+      throw new ValidationError('Can only revoke pending invites');
+    }
+
+    const deleted = await db.deleteInvite(inviteId);
+    if (!deleted) {
+      throw new ValidationError('Failed to revoke invite');
+    }
+
+    // Log the action
+    await this.createAuditLog(
+      adminId,
+      'REVOKE_INVITE',
+      'invite',
+      inviteId,
+      { email: invite.email, role: invite.role },
+      req
+    );
+
+    return { message: 'Invite revoked successfully' };
+  }
+
+  /**
+   * Get audit logs
+   */
+  async getAuditLogs(options = {}) {
+    const { 
+      page = 1, 
+      limit = 50, 
+      actorId, 
+      action, 
+      resourceType, 
+      startDate, 
+      endDate 
+    } = options;
+    const { offset } = calculatePagination(page, limit);
+
+    const result = await db.listAuditLogs({
+      offset,
+      limit,
+      actorId,
+      action,
+      resourceType,
+      startDate,
+      endDate
+    });
+    
+    return formatPaginationResponse(
+      result.logs.map(log => ({
+        id: log.log_id,
+        actor: log.actor ? {
+          id: log.actor.user_id,
+          name: `${log.actor.first_name} ${log.actor.last_name}`,
+          email: log.actor.email
+        } : null,
+        action: log.action,
+        resourceType: log.resource_type,
+        resourceId: log.resource_id,
+        metadata: log.metadata,
+        ipAddress: log.ip_address,
+        userAgent: log.user_agent,
+        timestamp: log.created_at
+      })),
+      result.total,
+      parseInt(page),
+      parseInt(limit)
+    );
+  }
+
+  /**
+   * Get user roles summary
+   */
+  async getRolesSummary() {
+    // This would ideally be a database aggregation query
+    const result = await db.listUsers({ limit: 1000 }); // Get all users for now
+    
+    const roleCount = {};
+    result.users.forEach(user => {
+      user.roles.forEach(role => {
+        roleCount[role] = (roleCount[role] || 0) + 1;
+      });
     });
 
-    return {
-      items: invites.items.map(invite => ({
-        code: invite.code,
-        role: invite.role,
-        createdBy: invite.createdBy,
-        createdAt: invite.createdAt,
-        expiresAt: invite.expiresAt
-      }))
-    };
+    return roleCount;
   }
 
-  async getAuditLogs(actor = '', action = '', from = '', to = '', cursor = null, limit = 50) {
-    let logs = [];
-
-    if (actor) {
-      const actorLogs = await dynamodb.queryGSI('GSI1', {
-        KeyConditionExpression: 'GSI1PK = :actor',
-        ExpressionAttributeValues: {
-          ':actor': `AUDIT#${actor}`
-        },
-        ScanIndexForward: false,
-        Limit: limit,
-        ExclusiveStartKey: cursor ? parseCursor(cursor) : undefined
-      });
-
-      logs = actorLogs.items;
-    } else {
-      const allLogs = await dynamodb.query({
-        KeyConditionExpression: 'begins_with(PK, :auditPrefix)',
-        ExpressionAttributeValues: {
-          ':auditPrefix': 'AUDIT#'
-        },
-        ScanIndexForward: false,
-        Limit: limit,
-        ExclusiveStartKey: cursor ? parseCursor(cursor) : undefined
-      });
-
-      logs = allLogs.items;
-    }
-
-    if (action) {
-      logs = logs.filter(log => log.action === action);
-    }
-
-    if (from) {
-      logs = logs.filter(log => log.createdAt >= from);
-    }
-
-    if (to) {
-      logs = logs.filter(log => log.createdAt <= to);
+  /**
+   * Bulk update user roles
+   */
+  async bulkUpdateRoles(adminId, userIds, newRoles, req) {
+    const results = [];
+    
+    for (const userId of userIds) {
+      try {
+        const updated = await this.updateUser(adminId, userId, { roles: newRoles }, req);
+        results.push({ userId, success: true, user: updated });
+      } catch (error) {
+        results.push({ userId, success: false, error: error.message });
+      }
     }
 
     return {
-      items: logs.map(log => ({
-        id: log.id,
-        actorUserId: log.actorUserId,
-        action: log.action,
-        resource: log.resource,
-        metadata: log.metadata,
-        createdAt: log.createdAt
-      })),
-      nextCursor: logs.length === limit ? encodeCursor({ PK: logs[logs.length - 1].PK, SK: logs[logs.length - 1].SK }) : null
+      message: `Bulk update completed`,
+      results,
+      successCount: results.filter(r => r.success).length,
+      failureCount: results.filter(r => !r.success).length
     };
   }
 }

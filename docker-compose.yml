@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: account-management-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: account_management
+      MYSQL_USER: app_user
+      MYSQL_PASSWORD: app_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      timeout: 5s
+      retries: 10
+      interval: 10s
+      start_period: 30s
+    networks:
+      - backend-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: account-management-backend
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - APP_ENV=production
+      - PORT=3000
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=account_management
+      - DB_USER=app_user
+      - DB_PASSWORD=app_password
+      - JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+      - JWT_EXPIRES_IN=900
+      - SESSION_TTL_DAYS=14
+      - EMAIL_FROM=no-reply@example.com
+      - EMAIL_PROVIDER=stub
+      - FRONTEND_BASE_URL=http://localhost:5173
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend:/usr/src/app
+      - /usr/src/app/node_modules
+    networks:
+      - backend-network
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+
+networks:
+  backend-network:
+    driver: bridge

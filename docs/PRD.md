@@ -81,102 +81,150 @@
 
 ---
 
-## 데이터베이스 설계(DynamoDB 단일 테이블)
+## 데이터베이스 설계(MySQL)
 
-테이블 이름: `ums-main`
+데이터베이스: `ums` (InnoDB, `utf8mb4`)
 
-### 파티션 키 설계
+### 테이블 개요
 
-* PK: 파티션 키, SK: 정렬 키
-* 아이템 유형을 접두사로 구분
+| 테이블                   | 목적               |
+| --------------------- | ---------------- |
+| `users`               | 사용자 기본 정보        |
+| `sessions`            | 리프레시 토큰 기반 서버 세션 |
+| `email_verifications` | 이메일 인증 토큰        |
+| `password_resets`     | 비밀번호 재설정 토큰      |
+| `roles`               | 역할 메타            |
+| `user_roles`          | 사용자-역할 매핑        |
+| `invites`             | 초대 코드 관리         |
+| `audit_logs`          | 감사 로그            |
 
-| Item 타입     | PK 예시                   | SK 예시               | 비고            |
-| ----------- | ----------------------- | ------------------- | ------------- |
-| User        | USER#<userId>           | PROFILE             | 사용자 기본 정보     |
-| EmailIndex  | EMAIL#<lowercasedEmail> | USER#<userId>       | 이메일 → 사용자 역참조 |
-| Session     | USER#<userId>           | SESSION#<sessionId> | 리프레시 토큰, TTL  |
-| EmailVerify | USER#<userId>           | VERIFY#<tokenId>    | TTL           |
-| PwdReset    | USER#<userId>           | PWRST#<tokenId>     | TTL           |
-| Role        | ROLE#<roleName>         | META                | 역할 설명         |
-| UserRole    | USER#<userId>           | ROLE#<roleName>     | 사용자 역할 부여     |
-| Invite      | INVITE#<code>           | META                | 초대 코드, TTL    |
-| AuditLog    | AUDIT#<yyyy-mm-dd>      | <timestamp>#<id>    | 검색용 GSI 병행 권장 |
+### 인덱스/조회 시나리오 매핑
 
-### GSI 제안
+* 이메일 단건 조회 → `users.email_lower` UNIQUE
+* 역할별 사용자 조회 → `user_roles(role_name, user_id)`
+* 토큰 단건 조회 → 각 토큰 테이블의 `token_hash` UNIQUE
+* 특정 사용자의 세션 조회 → `sessions(user_id, expires_at)`
+* 감사 로그 조회(행위자/기간) → `audit_logs(actor_user_id, created_at)`
 
-* GSI1: `GSI1PK`, `GSI1SK`
+### DDL
 
-  * 이메일 조회: GSI1PK=`EMAIL#<email>`, GSI1SK=`USER#<userId>`
-  * 감사 로그 조회: GSI1PK=`AUDIT#<actorUserId>`, GSI1SK=`<timestamp>#<id>`
-* GSI2: 토큰 조회: GSI2PK=`TOKEN#<tokenId>`, GSI2SK=`TYPE#<Verify|PwdReset|Session>`
-* GSI3: 역할별 사용자: GSI3PK=`ROLE#<roleName>`, GSI3SK=`USER#<userId>`
+````
+```sql
+CREATE TABLE users (
+  user_id        VARCHAR(64)  PRIMARY KEY,
+  email          VARCHAR(255) NOT NULL,
+  email_lower    VARCHAR(255) NOT NULL,
+  email_verified TINYINT(1)   NOT NULL DEFAULT 0,
+  password_hash  VARCHAR(255) NOT NULL,
+  display_name   VARCHAR(255) NOT NULL,
+  status         ENUM('active','disabled') NOT NULL DEFAULT 'active',
+  created_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uq_users_email_lower (email_lower)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-### 공통 속성
+CREATE TABLE roles (
+  role_name   VARCHAR(32) PRIMARY KEY,
+  description VARCHAR(255),
+  created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-* `createdAt`, `updatedAt` ISO8601
-* TTL 대상: 세션, 이메일 인증, 비밀번호 재설정, 초대 `expiresAt`(epoch seconds)
+CREATE TABLE user_roles (
+  user_id     VARCHAR(64)  NOT NULL,
+  role_name   VARCHAR(32)  NOT NULL,
+  assigned_by VARCHAR(64)  NOT NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (user_id, role_name),
+  KEY idx_user_roles_role_user (role_name, user_id),
+  CONSTRAINT fk_user_roles_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_roles_role FOREIGN KEY (role_name) REFERENCES roles(role_name) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-### 예시 아이템
+CREATE TABLE sessions (
+  session_id          VARCHAR(128) PRIMARY KEY,
+  user_id             VARCHAR(64)  NOT NULL,
+  refresh_token_hash  VARCHAR(255) NOT NULL,
+  ip                  VARCHAR(64),
+  ua                  VARCHAR(255),
+  created_at          DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at          DATETIME(3)  NOT NULL,
+  revoked_at          DATETIME(3)  NULL,
+  UNIQUE KEY uq_sessions_token_hash (refresh_token_hash),
+  KEY idx_sessions_user_expires (user_id, expires_at),
+  CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE email_verifications (
+  token_id    VARCHAR(128) PRIMARY KEY,
+  user_id     VARCHAR(64)  NOT NULL,
+  token_hash  VARCHAR(255) NOT NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at  DATETIME(3)  NOT NULL,
+  consumed_at DATETIME(3)  NULL,
+  UNIQUE KEY uq_email_verifications_token_hash (token_hash),
+  KEY idx_email_verifications_user (user_id),
+  CONSTRAINT fk_email_verifications_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE password_resets (
+  token_id    VARCHAR(128) PRIMARY KEY,
+  user_id     VARCHAR(64)  NOT NULL,
+  token_hash  VARCHAR(255) NOT NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at  DATETIME(3)  NOT NULL,
+  consumed_at DATETIME(3)  NULL,
+  UNIQUE KEY uq_password_resets_token_hash (token_hash),
+  KEY idx_password_resets_user (user_id),
+  CONSTRAINT fk_password_resets_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE invites (
+  code        VARCHAR(64)  PRIMARY KEY,
+  code_hash   VARCHAR(255) NOT NULL,
+  role_name   VARCHAR(32)  NOT NULL,
+  issued_by   VARCHAR(64)  NOT NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at  DATETIME(3)  NOT NULL,
+  used_by     VARCHAR(64)  NULL,
+  used_at     DATETIME(3)  NULL,
+  status      ENUM('issued','used','expired') NOT NULL DEFAULT 'issued',
+  UNIQUE KEY uq_invites_code_hash (code_hash),
+  KEY idx_invites_status (status),
+  KEY idx_invites_role (role_name),
+  KEY idx_invites_expires (expires_at),
+  CONSTRAINT fk_invites_role FOREIGN KEY (role_name) REFERENCES roles(role_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE audit_logs (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  actor_user_id  VARCHAR(64)  NOT NULL,
+  action         VARCHAR(64)  NOT NULL,
+  resource       VARCHAR(128) NOT NULL,
+  metadata       JSON         NULL,
+  created_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  KEY idx_audit_actor_time (actor_user_id, created_at),
+  KEY idx_audit_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
-{
-  "PK": "USER#u_123",
-  "SK": "PROFILE",
-  "userId": "u_123",
-  "email": "ryu@example.com",
-  "emailLower": "ryu@example.com",
-  "emailVerified": false,
-  "passwordHash": "<bcrypt>",  "displayName": "Ryu",
-  "status": "active",
-  "createdAt": "2025-08-19T09:00:00Z",
-  "updatedAt": "2025-08-19T09:00:00Z",
-  "GSI1PK": "EMAIL#ryu@example.com",
-  "GSI1SK": "USER#u_123"
-}
-```
+````
 
-```
-{
-  "PK": "USER#u_123",
-  "SK": "SESSION#s_abc",
-  "sessionId": "s_abc",
-  "refreshTokenHash": "<hash>",
-  "ip": "203.0.113.10",
-  "ua": "Chrome",
-  "createdAt": "2025-08-19T09:10:00Z",
-  "expiresAt": 1766200000,
-  "GSI2PK": "TOKEN#s_abc",
-  "GSI2SK": "TYPE#Session",
-  "TTL": 1766200000
-}
-```
+### 예시 레코드
 
-```
-{
-  "PK": "USER#u_123",
-  "SK": "ROLE#admin",
-  "role": "admin",
-  "assignedBy": "u_admin",
-  "createdAt": "2025-08-19T09:20:00Z",
-  "GSI3PK": "ROLE#admin",
-  "GSI3SK": "USER#u_123"
-}
-```
+````
+```sql
+INSERT INTO users (user_id, email, email_lower, email_verified, password_hash, display_name, status, created_at, updated_at)
+VALUES ('u_123', 'ryu@example.com', 'ryu@example.com', 0, '<bcrypt>', 'Ryu', 'active', '2025-08-19 09:00:00', '2025-08-19 09:00:00');
 
+INSERT INTO sessions (session_id, user_id, refresh_token_hash, ip, ua, created_at, expires_at)
+VALUES ('s_abc', 'u_123', '<hash>', '203.0.113.10', 'Chrome', '2025-08-19 09:10:00', '2030-01-19 00:00:00');
+
+INSERT INTO user_roles (user_id, role_name, assigned_by, created_at)
+VALUES ('u_123', 'admin', 'u_admin', '2025-08-19 09:20:00');
+
+INSERT INTO audit_logs (actor_user_id, action, resource, metadata, created_at)
+VALUES ('u_admin', 'UserRoleAssigned', 'USER#u_123', JSON_OBJECT('role','admin'), '2025-08-19 09:21:02.100');
 ```
-{
-  "PK": "AUDIT#2025-08-19",
-  "SK": "2025-08-19T09:21:02.100Z#a1",
-  "id": "a1",
-  "actorUserId": "u_admin",
-  "action": "UserRoleAssigned",
-  "resource": "USER#u_123",
-  "metadata": {"role": "admin"},
-  "createdAt": "2025-08-19T09:21:02.100Z",
-  "GSI1PK": "AUDIT#u_admin",
-  "GSI1SK": "2025-08-19T09:21:02.100Z#a1"
-}
-```
+````
 
 ---
 
@@ -192,7 +240,8 @@
 * 페이지네이션: 커서 기반 `cursor`, `limit`
 * 에러 포맷
 
-```
+````
+```json
 {
   "error": {
     "code": "BadRequest",
@@ -201,6 +250,7 @@
   }
 }
 ```
+````
 
 ### 인증
 
@@ -209,38 +259,46 @@
   * `POST /auth/register`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "email": "user@example.com",
     "password": "P@ssw0rd!",
     "displayName": "Ryu"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "userId": "u_123",
     "email": "user@example.com",
     "emailVerified": false
   }
   ```
+  ````
+
 * 로그인
 
   * `POST /auth/login`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "email": "user@example.com",
     "password": "P@ssw0rd!"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "accessToken": "<jwt>",
     "accessTokenExpiresIn": 900,
@@ -252,83 +310,105 @@
     }
   }
   ```
+  ````
+
 * 토큰 갱신
 
   * `POST /auth/refresh`
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "accessToken": "<jwt>",
     "accessTokenExpiresIn": 900
   }
   ```
+  ````
+
 * 로그아웃
 
   * `POST /auth/logout`
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "ok": true
   }
   ```
+  ````
+
 * 이메일 인증
 
   * 링크 예시: `/auth/verify-email?token=<token>`
   * `POST /auth/verify-email`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "token": "<token>"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "ok": true
   }
   ```
+  ````
+
 * 비밀번호 재설정 요청
 
   * `POST /auth/password/forgot`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "email": "user@example.com"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "ok": true
   }
   ```
+  ````
+
 * 비밀번호 재설정
 
   * `POST /auth/password/reset`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "token": "<token>",
     "newPassword": "NewP@ss!"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "ok": true
   }
   ```
+  ````
 
 ### 사용자
 
@@ -337,7 +417,8 @@
   * `GET /me` (Auth 필요)
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "userId": "u_123",
     "email": "user@example.com",
@@ -347,24 +428,30 @@
     "createdAt": "2025-08-19T09:00:00Z"
   }
   ```
+  ````
+
 * 내 프로필 수정
 
   * `PATCH /me`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "displayName": "Ryu Park"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "ok": true
   }
   ```
+  ````
 
 ### 관리자
 
@@ -373,7 +460,8 @@
   * `GET /admin/users?query=&role=&status=&cursor=&limit=`
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "items": [
       {
@@ -388,12 +476,15 @@
     "nextCursor": "eyJzayI6ICJQUk9GSUxFIiB9"
   }
   ```
+  ````
+
 * 사용자 상세
 
   * `GET /admin/users/:userId`
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "user": {
       "userId": "u_123",
@@ -415,79 +506,100 @@
     ]
   }
   ```
+  ````
+
 * 사용자 수정
 
   * `PATCH /admin/users/:userId`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "displayName": "New Name",
     "status": "disabled"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "ok": true
   }
   ```
+  ````
+
 * 역할 부여
 
   * `POST /admin/users/:userId/roles`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "role": "admin"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "ok": true
   }
   ```
+  ````
+
 * 역할 해제
 
   * `DELETE /admin/users/:userId/roles/:role`
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "ok": true
   }
   ```
+  ````
+
 * 초대 발급
 
   * `POST /admin/invites`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "role": "member",
     "expiresInHours": 72
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "code": "INV-ABCD1234",
     "expiresAt": 1766200000
   }
   ```
+  ````
+
 * 초대 사용
 
   * `POST /invites/redeem`
   * 요청
 
-  ```
+  ````
+  ```json
   {
     "code": "INV-ABCD1234",
     "email": "user@example.com",
@@ -495,21 +607,26 @@
     "displayName": "Ryu"
   }
   ```
+  ````
 
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "userId": "u_124",
     "email": "user@example.com"
   }
   ```
+  ````
+
 * 감사 로그 조회
 
   * `GET /admin/audit?actor=&action=&from=&to=&cursor=&limit=`
   * 응답
 
-  ```
+  ````
+  ```json
   {
     "items": [
       {
@@ -524,17 +641,20 @@
     "nextCursor": null
   }
   ```
+  ````
 
 ---
 
 ## 권한 정책
 
 * 기본
+
   * `member`: 본인 정보만 접근
   * `admin`: 관리자 API 접근 가능
 * JWT 클레임 예시
 
-```
+````
+```json
 {
   "sub": "u_123",
   "roles": ["member"],
@@ -542,13 +662,14 @@
   "exp": **1692430900**
 }
 ```
+````
 
 ---
 
 ## 이메일·토큰 수명
 
 * 액세스 토큰: 15분
-* 리프레시 토큰/세션: 7\~30일(환경변수 설정), DynamoDB TTL로 자동 만료
+* 리프레시 토큰/세션: 7\~30일(환경변수 설정), 만료는 `sessions.expires_at` 기준으로 **정기 정리 작업(cron/워크커 또는 MySQL EVENT)** 으로 삭제 처리
 * 이메일 인증 토큰: 24시간
 * 비밀번호 재설정 토큰: 1시간
 * 초대 코드: 기본 72시간
@@ -568,12 +689,14 @@
 ## 백엔드 구성(Node.js)
 
 * 구조
+
   * 라우팅: `/auth`, `/me`, `/admin`
   * 서비스: 사용자, 세션, 역할, 초대, 감사
-  * 어댑터: DynamoDB SDK, 이메일 발송(추상화)
+  * 어댑터: **MySQL 드라이버/ORM(예: Prisma, mysql2, TypeORM) 추상화**
   * 미들웨어: 인증, 권한, 요청 스키마 검증
   * 백엔드는 하나의 서버에서 동작하도록 한다.
 * 보안
+
   * 비밀번호 `bcrypt` 해시
   * 리프레시 토큰 서버 저장(해시) 및 회전
   * 로그인·역할 변경·비번 변경 시 감사 로그 기록
@@ -582,18 +705,27 @@
 
 ## 환경 변수
 
-```
+````
+```bash
 APP_ENV=local
 PORT=3000
 JWT_SECRET=<secret>
 JWT_EXPIRES_IN=900
 SESSION_TTL_DAYS=14
-DDB_TABLE=ums-main
-AWS_REGION=ap-northeast-2
+
+DATABASE_URL=mysql://user:pass@localhost:3306/ums
+# 또는 개별 설정
+# MYSQL_HOST=localhost
+# MYSQL_PORT=3306
+# MYSQL_USER=user
+# MYSQL_PASSWORD=pass
+# MYSQL_DB=ums
+
 EMAIL_FROM=no-reply@example.com
 EMAIL_PROVIDER=<stub|ses|smtp>
 FRONTEND_BASE_URL=http://localhost:5173
 ```
+````
 
 ---
 

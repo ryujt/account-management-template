@@ -1,392 +1,339 @@
-const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const dynamodb = require('../adapters/dynamodb');
-const emailAdapter = require('../adapters/email');
+const bcrypt = require('bcryptjs');
 const config = require('../config/config');
-const { generateId, getISOTimestamp, getUnixTimestamp, getExpiresAtTimestamp, getExpiresAtTimestampHours } = require('../utils/helpers');
-const { BadRequestError, UnauthorizedError, ConflictError, NotFoundError } = require('../utils/errors');
+const db = require('../adapters/database');
+const emailAdapter = require('../adapters/email');
+const { generateToken, generateId, getCurrentTimestamp, getFutureTimestamp } = require('../utils/helpers');
+const { ValidationError, NotFoundError, UnauthorizedError, ConflictError } = require('../utils/errors');
 
 class AuthService {
-  async register(email, password, displayName, inviteCode = null) {
-    const emailLower = email.toLowerCase();
-    
-    const existingUser = await dynamodb.queryGSI('GSI1', {
-      KeyConditionExpression: 'GSI1PK = :email',
-      ExpressionAttributeValues: {
-        ':email': `EMAIL#${emailLower}`
-      },
-      Limit: 1
-    });
-
-    if (existingUser.items.length > 0) {
-      throw new ConflictError('Email already registered');
+  
+  /**
+   * Register a new user
+   */
+  async register({ email, password, firstName, lastName, inviteCode = null }) {
+    // Check if user already exists
+    const existingUser = await db.getUserByEmail(email);
+    if (existingUser) {
+      throw new ConflictError('User with this email already exists');
     }
 
-    let role = 'member';
+    let userRoles = ['member'];
+    let invite = null;
+
+    // Handle invite code if provided
     if (inviteCode) {
-      const invite = await dynamodb.get(`INVITE#${inviteCode}`, 'META');
+      invite = await db.getInviteByCode(inviteCode);
       if (!invite) {
-        throw new BadRequestError('Invalid invite code');
+        throw new NotFoundError('Invalid invite code');
       }
-      if (invite.expiresAt < getUnixTimestamp()) {
-        throw new BadRequestError('Invite code expired');
+
+      if (invite.status !== 'pending') {
+        throw new ValidationError('Invite code has already been used or expired');
       }
-      role = invite.role;
-      await dynamodb.delete(`INVITE#${inviteCode}`, 'META');
+
+      if (new Date() > new Date(invite.expires_at)) {
+        throw new ValidationError('Invite code has expired');
+      }
+
+      if (invite.email !== email) {
+        throw new ValidationError('Email does not match the invite');
+      }
+
+      userRoles = [invite.role];
     }
 
-    const userId = generateId('u');
-    const passwordHash = await bcrypt.hash(password, 10);
-    const now = getISOTimestamp();
+    // Create user
+    const userId = generateId();
+    const emailVerificationToken = generateToken();
+    const emailVerificationExpires = getFutureTimestamp(1440); // 24 hours
 
-    const user = {
-      PK: `USER#${userId}`,
-      SK: 'PROFILE',
-      userId,
+    const userData = {
+      user_id: userId,
       email,
-      emailLower,
-      emailVerified: false,
-      passwordHash,
-      displayName,
-      status: 'active',
-      createdAt: now,
-      updatedAt: now,
-      GSI1PK: `EMAIL#${emailLower}`,
-      GSI1SK: `USER#${userId}`
+      password_hash: password, // Will be hashed by the model hook
+      first_name: firstName,
+      last_name: lastName,
+      roles: userRoles,
+      status: 'inactive',
+      email_verified: false,
+      email_verification_token: emailVerificationToken,
+      email_verification_expires: emailVerificationExpires
     };
 
-    const emailIndex = {
-      PK: `EMAIL#${emailLower}`,
-      SK: `USER#${userId}`,
-      userId,
-      createdAt: now
-    };
+    const user = await db.createUser(userData);
 
-    const userRole = {
-      PK: `USER#${userId}`,
-      SK: `ROLE#${role}`,
-      role,
-      assignedBy: 'system',
-      createdAt: now,
-      GSI3PK: `ROLE#${role}`,
-      GSI3SK: `USER#${userId}`
-    };
+    // Update invite if used
+    if (invite) {
+      await db.updateInvite(invite.invite_id, {
+        status: 'accepted',
+        accepted_at: getCurrentTimestamp(),
+        accepted_by: userId
+      });
+    }
 
-    await dynamodb.batchWrite([
-      { PutRequest: { Item: user } },
-      { PutRequest: { Item: emailIndex } },
-      { PutRequest: { Item: userRole } }
-    ]);
-
-    const verifyToken = generateId('v');
-    const verifyItem = {
-      PK: `USER#${userId}`,
-      SK: `VERIFY#${verifyToken}`,
-      tokenId: verifyToken,
-      createdAt: now,
-      expiresAt: getExpiresAtTimestampHours(24),
-      TTL: getExpiresAtTimestampHours(24),
-      GSI2PK: `TOKEN#${verifyToken}`,
-      GSI2SK: 'TYPE#Verify'
-    };
-    await dynamodb.put(verifyItem);
-
-    await emailAdapter.sendVerificationEmail(email, verifyToken);
+    // Send verification email
+    try {
+      await emailAdapter.sendEmailVerification(user, emailVerificationToken);
+    } catch (error) {
+      console.error('Failed to send verification email:', error);
+      // Don't fail registration if email fails
+    }
 
     return {
-      userId,
-      email,
-      emailVerified: false
+      user: user.toJSON(),
+      message: 'User registered successfully. Please check your email to verify your account.'
     };
   }
 
-  async login(email, password) {
-    const emailLower = email.toLowerCase();
-    
-    const userIndex = await dynamodb.queryGSI('GSI1', {
-      KeyConditionExpression: 'GSI1PK = :email',
-      ExpressionAttributeValues: {
-        ':email': `EMAIL#${emailLower}`
-      },
-      Limit: 1
-    });
-
-    if (userIndex.items.length === 0) {
-      throw new UnauthorizedError('Invalid credentials');
-    }
-
-    const userId = userIndex.items[0].userId;
-    const user = await dynamodb.get(`USER#${userId}`, 'PROFILE');
-
+  /**
+   * Login user
+   */
+  async login({ email, password }, req) {
+    const user = await db.getUserByEmail(email);
     if (!user) {
-      throw new UnauthorizedError('Invalid credentials');
+      throw new UnauthorizedError('Invalid email or password');
     }
 
+    // Check password
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      throw new UnauthorizedError('Invalid email or password');
+    }
+
+    // Check if user is active
     if (user.status !== 'active') {
-      throw new UnauthorizedError('Account is not active');
+      if (user.status === 'inactive') {
+        throw new UnauthorizedError('Please verify your email before logging in');
+      }
+      throw new UnauthorizedError('Account is suspended');
     }
 
-    const validPassword = await bcrypt.compare(password, user.passwordHash);
-    if (!validPassword) {
-      throw new UnauthorizedError('Invalid credentials');
-    }
+    // Update login info
+    await db.updateUser(user.user_id, {
+      last_login: getCurrentTimestamp(),
+      login_count: user.login_count + 1
+    });
 
-    const roles = await this.getUserRoles(userId);
+    // Generate tokens
+    const accessToken = this.generateAccessToken(user);
+    const refreshToken = generateToken();
+    const sessionExpires = new Date();
+    sessionExpires.setDate(sessionExpires.getDate() + config.jwt.sessionTtlDays);
 
-    const accessToken = jwt.sign(
-      { sub: userId, roles },
-      config.jwt.secret,
-      { expiresIn: config.jwt.expiresIn }
-    );
-
-    const sessionId = generateId('s');
-    const refreshToken = generateId('rt');
-    const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
-    const now = getISOTimestamp();
-
-    const session = {
-      PK: `USER#${userId}`,
-      SK: `SESSION#${sessionId}`,
-      sessionId,
-      refreshTokenHash,
-      ip: '0.0.0.0',
-      ua: 'Unknown',
-      createdAt: now,
-      expiresAt: getExpiresAtTimestamp(config.session.ttlDays),
-      TTL: getExpiresAtTimestamp(config.session.ttlDays),
-      GSI2PK: `TOKEN#${sessionId}`,
-      GSI2SK: 'TYPE#Session'
+    // Create session
+    const sessionData = {
+      session_id: generateId(),
+      user_id: user.user_id,
+      refresh_token: refreshToken,
+      expires_at: sessionExpires,
+      ip_address: req.ip,
+      user_agent: req.get('User-Agent'),
+      is_active: true
     };
 
-    await dynamodb.put(session);
+    await db.createSession(sessionData);
 
-    await this.createAuditLog(userId, 'UserLoggedIn', `USER#${userId}`, {});
-
+    // Return response
     return {
+      user: user.toJSON(),
       accessToken,
-      accessTokenExpiresIn: config.jwt.expiresIn,
       refreshToken,
-      user: {
-        userId,
-        email: user.email,
-        displayName: user.displayName,
-        roles
-      }
+      expiresIn: config.jwt.expiresIn
     };
   }
 
-  async refresh(refreshToken) {
-    const sessions = await dynamodb.query({
-      KeyConditionExpression: 'begins_with(SK, :sk)',
-      ExpressionAttributeValues: {
-        ':sk': 'SESSION#'
-      }
-    });
-
-    let validSession = null;
-    for (const session of sessions.items) {
-      const valid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
-      if (valid) {
-        validSession = session;
-        break;
-      }
-    }
-
-    if (!validSession) {
+  /**
+   * Refresh access token
+   */
+  async refresh({ refreshToken }) {
+    const session = await db.getSessionByRefreshToken(refreshToken);
+    if (!session) {
       throw new UnauthorizedError('Invalid refresh token');
     }
 
-    if (validSession.expiresAt < getUnixTimestamp()) {
+    if (new Date() > new Date(session.expires_at)) {
+      await db.deleteSession(session.session_id);
       throw new UnauthorizedError('Refresh token expired');
     }
 
-    const userId = validSession.PK.replace('USER#', '');
-    const roles = await this.getUserRoles(userId);
+    if (!session.is_active) {
+      throw new UnauthorizedError('Session is not active');
+    }
 
-    const accessToken = jwt.sign(
-      { sub: userId, roles },
-      config.jwt.secret,
-      { expiresIn: config.jwt.expiresIn }
-    );
+    // Generate new access token
+    const accessToken = this.generateAccessToken(session.user);
+
+    // Update session
+    await db.updateSession(session.session_id, {
+      updated_at: getCurrentTimestamp()
+    });
 
     return {
       accessToken,
-      accessTokenExpiresIn: config.jwt.expiresIn
+      expiresIn: config.jwt.expiresIn
     };
   }
 
-  async logout(userId, refreshToken) {
-    const sessions = await dynamodb.query({
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-      ExpressionAttributeValues: {
-        ':pk': `USER#${userId}`,
-        ':sk': 'SESSION#'
+  /**
+   * Logout user
+   */
+  async logout({ userId, refreshToken = null }) {
+    if (refreshToken) {
+      const session = await db.getSessionByRefreshToken(refreshToken);
+      if (session && session.user_id === userId) {
+        await db.deleteSession(session.session_id);
       }
-    });
-
-    for (const session of sessions.items) {
-      const valid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
-      if (valid) {
-        await dynamodb.delete(session.PK, session.SK);
-        break;
-      }
+    } else {
+      // Logout from all sessions
+      await db.deleteUserSessions(userId);
     }
 
-    await this.createAuditLog(userId, 'UserLoggedOut', `USER#${userId}`, {});
-
-    return { ok: true };
+    return { message: 'Logged out successfully' };
   }
 
-  async verifyEmail(token) {
-    const tokenData = await dynamodb.queryGSI('GSI2', {
-      KeyConditionExpression: 'GSI2PK = :token AND GSI2SK = :type',
-      ExpressionAttributeValues: {
-        ':token': `TOKEN#${token}`,
-        ':type': 'TYPE#Verify'
-      },
-      Limit: 1
-    });
-
-    if (tokenData.items.length === 0) {
-      throw new BadRequestError('Invalid or expired token');
-    }
-
-    const verifyToken = tokenData.items[0];
-    if (verifyToken.expiresAt < getUnixTimestamp()) {
-      throw new BadRequestError('Token expired');
-    }
-
-    const userId = verifyToken.PK.replace('USER#', '');
-
-    await dynamodb.update(
-      `USER#${userId}`,
-      'PROFILE',
-      'SET emailVerified = :true, updatedAt = :now',
-      undefined,
+  /**
+   * Verify email
+   */
+  async verifyEmail({ token }) {
+    const user = await db.getUserByEmail(''); // We need to find by token instead
+    // Since Sequelize doesn't have a direct method, we'll use raw query or add to adapter
+    const users = await db.sequelize.query(
+      'SELECT * FROM users WHERE email_verification_token = ? AND email_verification_expires > NOW()',
       {
-        ':true': true,
-        ':now': getISOTimestamp()
+        replacements: [token],
+        model: db.User,
+        mapToModel: true
       }
     );
 
-    await dynamodb.delete(verifyToken.PK, verifyToken.SK);
+    if (users.length === 0) {
+      throw new ValidationError('Invalid or expired verification token');
+    }
 
-    return { ok: true };
-  }
+    const user = users[0];
 
-  async forgotPassword(email) {
-    const emailLower = email.toLowerCase();
-    
-    const userIndex = await dynamodb.queryGSI('GSI1', {
-      KeyConditionExpression: 'GSI1PK = :email',
-      ExpressionAttributeValues: {
-        ':email': `EMAIL#${emailLower}`
-      },
-      Limit: 1
+    // Update user
+    await db.updateUser(user.user_id, {
+      status: 'active',
+      email_verified: true,
+      email_verification_token: null,
+      email_verification_expires: null
     });
 
-    if (userIndex.items.length === 0) {
-      return { ok: true };
-    }
-
-    const userId = userIndex.items[0].userId;
-    const user = await dynamodb.get(`USER#${userId}`, 'PROFILE');
-
-    if (!user || user.status !== 'active') {
-      return { ok: true };
-    }
-
-    const resetToken = generateId('r');
-    const now = getISOTimestamp();
-
-    const resetItem = {
-      PK: `USER#${userId}`,
-      SK: `PWRST#${resetToken}`,
-      tokenId: resetToken,
-      createdAt: now,
-      expiresAt: getExpiresAtTimestampHours(1),
-      TTL: getExpiresAtTimestampHours(1),
-      GSI2PK: `TOKEN#${resetToken}`,
-      GSI2SK: 'TYPE#PwdReset'
-    };
-
-    await dynamodb.put(resetItem);
-    await emailAdapter.sendPasswordResetEmail(user.email, resetToken);
-
-    return { ok: true };
+    return { message: 'Email verified successfully' };
   }
 
-  async resetPassword(token, newPassword) {
-    const tokenData = await dynamodb.queryGSI('GSI2', {
-      KeyConditionExpression: 'GSI2PK = :token AND GSI2SK = :type',
-      ExpressionAttributeValues: {
-        ':token': `TOKEN#${token}`,
-        ':type': 'TYPE#PwdReset'
-      },
-      Limit: 1
+  /**
+   * Request password reset
+   */
+  async forgotPassword({ email }) {
+    const user = await db.getUserByEmail(email);
+    if (!user) {
+      // Don't reveal if email exists
+      return { message: 'If the email exists, a reset link has been sent' };
+    }
+
+    const resetToken = generateToken();
+    const resetExpires = getFutureTimestamp(60); // 1 hour
+
+    await db.updateUser(user.user_id, {
+      password_reset_token: resetToken,
+      password_reset_expires: resetExpires
     });
 
-    if (tokenData.items.length === 0) {
-      throw new BadRequestError('Invalid or expired token');
+    try {
+      await emailAdapter.sendPasswordReset(user, resetToken);
+    } catch (error) {
+      console.error('Failed to send password reset email:', error);
     }
 
-    const resetToken = tokenData.items[0];
-    if (resetToken.expiresAt < getUnixTimestamp()) {
-      throw new BadRequestError('Token expired');
-    }
+    return { message: 'If the email exists, a reset link has been sent' };
+  }
 
-    const userId = resetToken.PK.replace('USER#', '');
-    const passwordHash = await bcrypt.hash(newPassword, 10);
-
-    await dynamodb.update(
-      `USER#${userId}`,
-      'PROFILE',
-      'SET passwordHash = :hash, updatedAt = :now',
-      undefined,
+  /**
+   * Reset password
+   */
+  async resetPassword({ token, newPassword }) {
+    const users = await db.sequelize.query(
+      'SELECT * FROM users WHERE password_reset_token = ? AND password_reset_expires > NOW()',
       {
-        ':hash': passwordHash,
-        ':now': getISOTimestamp()
+        replacements: [token],
+        model: db.User,
+        mapToModel: true
       }
     );
 
-    await dynamodb.delete(resetToken.PK, resetToken.SK);
+    if (users.length === 0) {
+      throw new ValidationError('Invalid or expired reset token');
+    }
 
-    await this.createAuditLog(userId, 'PasswordReset', `USER#${userId}`, {});
+    const user = users[0];
 
-    return { ok: true };
-  }
-
-  async getUserRoles(userId) {
-    const roles = await dynamodb.query({
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-      ExpressionAttributeValues: {
-        ':pk': `USER#${userId}`,
-        ':sk': 'ROLE#'
-      }
+    // Update password and clear reset token
+    await db.updateUser(user.user_id, {
+      password_hash: newPassword, // Will be hashed by model hook
+      password_reset_token: null,
+      password_reset_expires: null
     });
 
-    return roles.items.map(item => item.role);
+    // Invalidate all sessions for security
+    await db.deleteUserSessions(user.user_id);
+
+    return { message: 'Password reset successfully' };
   }
 
-  async createAuditLog(actorUserId, action, resource, metadata) {
-    const now = getISOTimestamp();
-    const date = now.split('T')[0];
-    const id = generateId('a');
+  /**
+   * Redeem invite code
+   */
+  async redeemInvite({ inviteCode }) {
+    const invite = await db.getInviteByCode(inviteCode);
+    if (!invite) {
+      throw new NotFoundError('Invalid invite code');
+    }
 
-    const auditLog = {
-      PK: `AUDIT#${date}`,
-      SK: `${now}#${id}`,
-      id,
-      actorUserId,
-      action,
-      resource,
-      metadata,
-      createdAt: now,
-      GSI1PK: `AUDIT#${actorUserId}`,
-      GSI1SK: `${now}#${id}`
+    if (invite.status !== 'pending') {
+      throw new ValidationError('Invite code has already been used or expired');
+    }
+
+    if (new Date() > new Date(invite.expires_at)) {
+      throw new ValidationError('Invite code has expired');
+    }
+
+    return {
+      invite: {
+        code: invite.invite_code,
+        email: invite.email,
+        role: invite.role,
+        expires_at: invite.expires_at
+      }
+    };
+  }
+
+  /**
+   * Generate access token
+   */
+  generateAccessToken(user) {
+    const payload = {
+      userId: user.user_id,
+      email: user.email,
+      roles: user.roles
     };
 
-    await dynamodb.put(auditLog);
+    return jwt.sign(payload, config.jwt.secret, {
+      expiresIn: `${config.jwt.expiresIn}s`
+    });
+  }
+
+  /**
+   * Verify access token
+   */
+  verifyAccessToken(token) {
+    try {
+      return jwt.verify(token, config.jwt.secret);
+    } catch (error) {
+      throw new UnauthorizedError('Invalid access token');
+    }
   }
 }
 

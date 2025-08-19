@@ -1,82 +1,131 @@
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 
-function generateId(prefix) {
-  return `${prefix}_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
-}
+/**
+ * Generate a unique ID
+ */
+const generateId = () => uuidv4();
 
-function generateInviteCode() {
+/**
+ * Generate a random token
+ */
+const generateToken = (length = 32) => {
+  return crypto.randomBytes(length).toString('hex');
+};
+
+/**
+ * Generate an invite code
+ */
+const generateInviteCode = () => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let code = 'INV-';
+  let result = '';
   for (let i = 0; i < 8; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-  return code;
-}
+  return result;
+};
 
-function getISOTimestamp() {
-  return new Date().toISOString();
-}
+/**
+ * Get current timestamp
+ */
+const getCurrentTimestamp = () => new Date().toISOString();
 
-function getUnixTimestamp() {
-  return Math.floor(Date.now() / 1000);
-}
+/**
+ * Get future timestamp
+ */
+const getFutureTimestamp = (minutes) => {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() + minutes);
+  return date.toISOString();
+};
 
-function getExpiresAtTimestamp(days) {
-  return getUnixTimestamp() + (days * 24 * 60 * 60);
-}
-
-function getExpiresAtTimestampHours(hours) {
-  return getUnixTimestamp() + (hours * 60 * 60);
-}
-
-function parseUserAgent(ua) {
-  if (!ua) return 'Unknown';
-  if (ua.includes('Chrome')) return 'Chrome';
-  if (ua.includes('Firefox')) return 'Firefox';
-  if (ua.includes('Safari')) return 'Safari';
-  if (ua.includes('Edge')) return 'Edge';
-  return 'Other';
-}
-
-function extractClientIp(req) {
-  return req.headers['x-forwarded-for']?.split(',')[0] || 
-         req.connection.remoteAddress || 
-         '0.0.0.0';
-}
-
-function validateEmail(email) {
+/**
+ * Validate email format
+ */
+const isValidEmail = (email) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
-}
+};
 
-function validatePassword(password) {
-  return password && password.length >= 8;
-}
+/**
+ * Validate password strength
+ */
+const isValidPassword = (password) => {
+  // At least 8 characters, 1 uppercase, 1 lowercase, 1 number
+  const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{8,}$/;
+  return passwordRegex.test(password);
+};
 
-function parseCursor(cursor) {
-  if (!cursor) return null;
-  try {
-    return JSON.parse(Buffer.from(cursor, 'base64').toString());
-  } catch {
-    return null;
-  }
-}
+/**
+ * Sanitize user input
+ */
+const sanitizeInput = (input) => {
+  if (typeof input !== 'string') return input;
+  return input.trim().replace(/<script[^>]*>.*?<\/script>/gi, '');
+};
 
-function encodeCursor(data) {
-  return Buffer.from(JSON.stringify(data)).toString('base64');
-}
+/**
+ * Get client IP address
+ */
+const getClientIP = (req) => {
+  return req.headers['x-forwarded-for'] || 
+         req.headers['x-real-ip'] || 
+         req.connection.remoteAddress || 
+         req.socket.remoteAddress ||
+         (req.connection.socket ? req.connection.socket.remoteAddress : null) ||
+         '0.0.0.0';
+};
+
+/**
+ * Calculate pagination offset
+ */
+const calculatePagination = (page = 1, limit = 20) => {
+  const pageNum = parseInt(page) || 1;
+  const limitNum = parseInt(limit) || 20;
+  const offset = (pageNum - 1) * limitNum;
+  
+  return {
+    offset,
+    limit: limitNum,
+    page: pageNum
+  };
+};
+
+/**
+ * Format pagination response
+ */
+const formatPaginationResponse = (data, total, page, limit) => {
+  const totalPages = Math.ceil(total / limit);
+  
+  return {
+    data,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrevious: page > 1
+    }
+  };
+};
+
+/**
+ * Sleep for testing
+ */
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 module.exports = {
   generateId,
+  generateToken,
   generateInviteCode,
-  getISOTimestamp,
-  getUnixTimestamp,
-  getExpiresAtTimestamp,
-  getExpiresAtTimestampHours,
-  parseUserAgent,
-  extractClientIp,
-  validateEmail,
-  validatePassword,
-  parseCursor,
-  encodeCursor
+  getCurrentTimestamp,
+  getFutureTimestamp,
+  isValidEmail,
+  isValidPassword,
+  sanitizeInput,
+  getClientIP,
+  calculatePagination,
+  formatPaginationResponse,
+  sleep
 };

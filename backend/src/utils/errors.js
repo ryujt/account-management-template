@@ -1,55 +1,64 @@
 class AppError extends Error {
-  constructor(message, code, status, details = {}) {
+  constructor(message, statusCode, code = null) {
     super(message);
+    this.statusCode = statusCode;
     this.code = code;
-    this.status = status;
-    this.details = details;
     this.isOperational = true;
+
+    Error.captureStackTrace(this, this.constructor);
   }
 }
 
-class BadRequestError extends AppError {
-  constructor(message, details = {}) {
-    super(message, 'BadRequest', 400, details);
-  }
-}
-
-class UnauthorizedError extends AppError {
-  constructor(message = 'Unauthorized', details = {}) {
-    super(message, 'Unauthorized', 401, details);
-  }
-}
-
-class ForbiddenError extends AppError {
-  constructor(message = 'Forbidden', details = {}) {
-    super(message, 'Forbidden', 403, details);
+class ValidationError extends AppError {
+  constructor(message, details = null) {
+    super(message, 400, 'VALIDATION_ERROR');
+    this.details = details;
   }
 }
 
 class NotFoundError extends AppError {
-  constructor(message = 'Not found', details = {}) {
-    super(message, 'NotFound', 404, details);
+  constructor(message = 'Resource not found') {
+    super(message, 404, 'NOT_FOUND');
+  }
+}
+
+class UnauthorizedError extends AppError {
+  constructor(message = 'Unauthorized') {
+    super(message, 401, 'UNAUTHORIZED');
+  }
+}
+
+class ForbiddenError extends AppError {
+  constructor(message = 'Forbidden') {
+    super(message, 403, 'FORBIDDEN');
   }
 }
 
 class ConflictError extends AppError {
-  constructor(message = 'Conflict', details = {}) {
-    super(message, 'Conflict', 409, details);
+  constructor(message = 'Conflict') {
+    super(message, 409, 'CONFLICT');
+  }
+}
+
+class BadRequestError extends AppError {
+  constructor(message = 'Bad request') {
+    super(message, 400, 'BAD_REQUEST');
   }
 }
 
 class InternalServerError extends AppError {
-  constructor(message = 'Internal server error', details = {}) {
-    super(message, 'InternalServerError', 500, details);
+  constructor(message = 'Internal server error') {
+    super(message, 500, 'INTERNAL_SERVER_ERROR');
   }
 }
 
 module.exports = {
   AppError,
-  BadRequestError,
+  ValidationError,
+  NotFoundError,
   UnauthorizedError,
   ForbiddenError,
-  NotFoundError,
   ConflictError,
+  BadRequestError,
   InternalServerError
 };
