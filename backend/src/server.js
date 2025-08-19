@@ -36,7 +36,10 @@ app.use(helmet({
 
 // CORS configuration
 app.use(cors({
-  origin: config.frontend.baseUrl,
+  origin: [
+    'http://localhost:3001', // Service frontend
+    'http://localhost:3002'  // Admin frontend
+  ],
   credentials: true,
   optionsSuccessStatus: 200
 }));
