@@ -1,0 +1,346 @@
+/* Admin Container */
+.admin-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Admin Header */
+.admin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 32px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.admin-header h1 {
+  margin: 0;
+  color: #333;
+}
+
+.admin-nav {
+  display: flex;
+  gap: 16px;
+}
+
+.nav-tab {
+  padding: 8px 16px;
+  text-decoration: none;
+  color: #666;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.nav-tab:hover {
+  background-color: #f8f9fa;
+  color: #333;
+}
+
+.nav-tab.active {
+  background-color: #007bff;
+  color: white;
+}
+
+/* Admin Content */
+.admin-content {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+/* Filters */
+.filters {
+  padding: 20px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.search-input,
+.filter-select,
+.filter-input {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.filter-select {
+  min-width: 120px;
+}
+
+/* Users Table */
+.users-table {
+  overflow-x: auto;
+}
+
+.users-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.users-table th,
+.users-table td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.users-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+  color: #333;
+}
+
+.users-table td {
+  vertical-align: middle;
+}
+
+/* Role Badges */
+.roles {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.role-badge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.role-badge.admin {
+  background-color: #dc3545;
+  color: white;
+}
+
+.role-badge.member {
+  background-color: #28a745;
+  color: white;
+}
+
+/* Status Select */
+.status-select {
+  padding: 4px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.status-select.active {
+  color: #28a745;
+}
+
+.status-select.disabled {
+  color: #dc3545;
+}
+
+/* User Actions */
+.user-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* User Detail */
+.user-detail {
+  padding: 20px;
+}
+
+.detail-section {
+  margin-bottom: 32px;
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.detail-section h2 {
+  margin-bottom: 16px;
+  font-size: 18px;
+  color: #333;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+/* Roles Management */
+.roles-management {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.role-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: white;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+}
+
+/* Sessions Table */
+.sessions-table {
+  overflow-x: auto;
+}
+
+.sessions-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.sessions-table th,
+.sessions-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.sessions-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+}
+
+/* Audit Filters */
+.audit-filters {
+  padding: 20px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.filter-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-row:last-child {
+  margin-bottom: 0;
+}
+
+.filter-input {
+  flex: 1;
+  min-width: 150px;
+}
+
+/* Audit Table */
+.audit-table {
+  overflow-x: auto;
+}
+
+.audit-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.audit-table th,
+.audit-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.audit-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+}
+
+/* Action Badges */
+.action-badge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: white;
+}
+
+.action-badge.userroleassigned {
+  background-color: #28a745;
+}
+
+.action-badge.userroleremoved {
+  background-color: #dc3545;
+}
+
+.action-badge.userstatuschanged {
+  background-color: #ffc107;
+  color: #333;
+}
+
+/* Details Element */
+details {
+  cursor: pointer;
+}
+
+details summary {
+  font-weight: 500;
+  color: #007bff;
+}
+
+details pre {
+  background: #f8f9fa;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  overflow-x: auto;
+  margin-top: 8px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .admin-container {
+    padding: 10px;
+  }
+  
+  .admin-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  
+  .admin-nav {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  .filters {
+    flex-direction: column;
+  }
+  
+  .filter-row {
+    flex-direction: column;
+  }
+  
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .role-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .user-actions {
+    flex-direction: column;
+  }
+}

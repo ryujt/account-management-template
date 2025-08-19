@@ -211,10 +211,10 @@ class AuthService {
       throw new ValidationError('Invalid or expired verification token');
     }
 
-    const user = users[0];
+    const verifiedUser = users[0];
 
     // Update user
-    await db.updateUser(user.user_id, {
+    await db.updateUser(verifiedUser.user_id, {
       status: 'active',
       email_verified: true,
       email_verification_token: null,

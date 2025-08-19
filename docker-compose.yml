@@ -45,7 +45,7 @@ services:
       - SESSION_TTL_DAYS=14
       - EMAIL_FROM=no-reply@example.com
       - EMAIL_PROVIDER=stub
-      - FRONTEND_BASE_URL=http://localhost:5173
+      - FRONTEND_BASE_URL=http://localhost:3001
     ports:
       - "3000:3000"
     volumes:

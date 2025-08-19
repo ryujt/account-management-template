@@ -1,0 +1,170 @@
+/* Page Container */
+.page-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Hero Section */
+.hero-section {
+  text-align: center;
+  padding: 60px 0;
+}
+
+.hero-section h1 {
+  font-size: 36px;
+  margin-bottom: 16px;
+  color: #333;
+}
+
+.hero-section p {
+  font-size: 18px;
+  color: #666;
+  margin-bottom: 40px;
+}
+
+/* Welcome Section */
+.welcome-section {
+  background: white;
+  padding: 32px;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  margin-top: 32px;
+}
+
+.welcome-section h2 {
+  margin-bottom: 24px;
+  color: #333;
+}
+
+.user-info {
+  background: #f8f9fa;
+  padding: 16px;
+  border-radius: 4px;
+  margin-bottom: 24px;
+}
+
+.user-info p {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.user-info p:last-child {
+  margin-bottom: 0;
+}
+
+/* Auth Section */
+.auth-section {
+  background: white;
+  padding: 32px;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  margin-top: 32px;
+}
+
+.auth-section h2 {
+  margin-bottom: 16px;
+  color: #333;
+}
+
+.auth-section p {
+  margin-bottom: 24px;
+  color: #666;
+}
+
+/* Action Buttons */
+.action-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Profile Section */
+.profile-section {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.profile-section h1 {
+  margin-bottom: 32px;
+  text-align: center;
+}
+
+.profile-info {
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  margin-bottom: 24px;
+}
+
+.profile-info h2 {
+  margin-bottom: 16px;
+  font-size: 18px;
+  color: #333;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.info-item label {
+  font-weight: 500;
+  color: #666;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.info-item span {
+  font-size: 16px;
+  color: #333;
+}
+
+.profile-edit {
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.profile-edit h2 {
+  margin-bottom: 16px;
+  font-size: 18px;
+  color: #333;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .page-container {
+    padding: 10px;
+  }
+  
+  .hero-section {
+    padding: 40px 0;
+  }
+  
+  .hero-section h1 {
+    font-size: 28px;
+  }
+  
+  .welcome-section,
+  .auth-section {
+    padding: 20px;
+  }
+  
+  .action-buttons {
+    flex-direction: column;
+  }
+  
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+}
