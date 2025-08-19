@@ -100,7 +100,15 @@ const User = sequelize.define('User', {
 
 // Instance methods
 User.prototype.comparePassword = async function(password) {
-  return bcrypt.compare(password, this.password_hash);
+  console.log('🔍 Password comparison:');
+  console.log('  Input password:', password);
+  console.log('  Stored hash:', this.password_hash);
+  console.log('  Hash starts with:', this.password_hash?.substring(0, 10));
+  
+  const result = await bcrypt.compare(password, this.password_hash);
+  console.log('  Comparison result:', result);
+  
+  return result;
 };
 
 User.prototype.hasRole = function(role) {

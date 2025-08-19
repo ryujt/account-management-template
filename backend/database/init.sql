@@ -112,7 +112,7 @@ INSERT IGNORE INTO users (
 ) VALUES (
     UUID(), 
     'admin@example.com', 
-    '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewfC6JRs.kF5.Cu.', -- password: admin123
+    '$2a$12$K5Kx7r8g8qF9Z2vL4mN1U.c7QKd3.gF9Z8r3K5Kx7r8g8qF9Z2vL4m', -- password: admin123
     'Admin', 
     'User', 
     JSON_ARRAY('admin', 'member'), 

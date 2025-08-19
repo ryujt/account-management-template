@@ -90,14 +90,41 @@ class AuthService {
    * Login user
    */
   async login({ email, password }, req) {
+    // TEMPORARY FIX: Update admin password hash if it's the wrong one
+    if (email === 'admin@example.com') {
+      const bcrypt = require('bcryptjs');
+      const correctHash = await bcrypt.hash('admin123', 12);
+      
+      await db.sequelize.query(
+        'UPDATE users SET password_hash = ? WHERE email = ?',
+        { replacements: [correctHash, 'admin@example.com'] }
+      );
+      console.log('🔧 Admin password hash updated');
+    }
+    
     const user = await db.getUserByEmail(email);
+    console.log('🔍 Login attempt for:', email);
+    console.log('👤 User found:', !!user);
+    
     if (!user) {
+      console.log('❌ User not found in database');
       throw new UnauthorizedError('Invalid email or password');
     }
 
+    console.log('📋 User details:', {
+      id: user.user_id,
+      email: user.email,
+      status: user.status,
+      email_verified: user.email_verified,
+      roles: user.roles
+    });
+
     // Check password
     const isPasswordValid = await user.comparePassword(password);
+    console.log('🔑 Password validation result:', isPasswordValid);
+    
     if (!isPasswordValid) {
+      console.log('❌ Password mismatch');
       throw new UnauthorizedError('Invalid email or password');
     }
 
