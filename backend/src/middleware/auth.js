@@ -1,232 +1,277 @@
-const authService = require('../services/authService');
-const db = require('../adapters/database');
-const { UnauthorizedError, ForbiddenError } = require('../utils/errors');
+const jwt = require('jsonwebtoken');
+const config = require('../config/config');
+const { User, Role } = require('../models');
 
-/**
- * Authenticate JWT token
- */
+// Extract token from Authorization header or cookies
+const extractToken = (req) => {
+  // Check Authorization header first
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.substring(7);
+  }
+
+  // Check cookies as fallback
+  if (req.cookies && req.cookies.accessToken) {
+    return req.cookies.accessToken;
+  }
+
+  return null;
+};
+
+// Verify JWT token
+const verifyToken = (token, secret) => {
+  try {
+    return jwt.verify(token, secret);
+  } catch (error) {
+    if (error.name === 'TokenExpiredError') {
+      throw new Error('Token expired');
+    } else if (error.name === 'JsonWebTokenError') {
+      throw new Error('Invalid token');
+    }
+    throw error;
+  }
+};
+
+// Authentication middleware
 const authenticate = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
+    const token = extractToken(req);
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedError('No token provided');
-    }
-
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-    const decoded = authService.verifyAccessToken(token);
-    
-    // Get fresh user data from database
-    const user = await db.getUserById(decoded.userId);
-    if (!user) {
-      throw new UnauthorizedError('User not found');
-    }
-
-    if (user.status !== 'active') {
-      throw new UnauthorizedError('Account is not active');
-    }
-
-    // Attach user to request
-    req.user = {
-      userId: user.user_id,
-      email: user.email,
-      firstName: user.first_name,
-      lastName: user.last_name,
-      roles: user.roles,
-      status: user.status,
-      emailVerified: user.email_verified
-    };
-
-    next();
-  } catch (error) {
-    if (error.name === 'JsonWebTokenError') {
-      return next(new UnauthorizedError('Invalid token'));
-    }
-    if (error.name === 'TokenExpiredError') {
-      return next(new UnauthorizedError('Token expired'));
-    }
-    next(error);
-  }
-};
-
-/**
- * Optional authentication - doesn't fail if no token
- */
-const optionalAuthenticate = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return next();
-    }
-
-    const token = authHeader.substring(7);
-    const decoded = authService.verifyAccessToken(token);
-    
-    const user = await db.getUserById(decoded.userId);
-    if (user && user.status === 'active') {
-      req.user = {
-        userId: user.user_id,
-        email: user.email,
-        firstName: user.first_name,
-        lastName: user.last_name,
-        roles: user.roles,
-        status: user.status,
-        emailVerified: user.email_verified
-      };
-    }
-    
-    next();
-  } catch (error) {
-    // Ignore auth errors for optional auth
-    next();
-  }
-};
-
-/**
- * Require specific role
- */
-const requireRole = (requiredRole) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return next(new UnauthorizedError('Authentication required'));
-    }
-
-    if (!req.user.roles || !req.user.roles.includes(requiredRole)) {
-      return next(new ForbiddenError(`Role '${requiredRole}' required`));
-    }
-
-    next();
-  };
-};
-
-/**
- * Require any of the specified roles
- */
-const requireAnyRole = (allowedRoles) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return next(new UnauthorizedError('Authentication required'));
-    }
-
-    if (!req.user.roles || !req.user.roles.some(role => allowedRoles.includes(role))) {
-      return next(new ForbiddenError(`One of the following roles required: ${allowedRoles.join(', ')}`));
-    }
-
-    next();
-  };
-};
-
-/**
- * Require admin role
- */
-const requireAdmin = requireRole('admin');
-
-/**
- * Require user to be accessing their own resources or be admin
- */
-const requireOwnerOrAdmin = (userIdParam = 'userId') => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return next(new UnauthorizedError('Authentication required'));
-    }
-
-    const targetUserId = req.params[userIdParam] || req.body[userIdParam] || req.query[userIdParam];
-    
-    // Allow if user is accessing their own resources
-    if (req.user.userId === targetUserId) {
-      return next();
-    }
-
-    // Allow if user is admin
-    if (req.user.roles && req.user.roles.includes('admin')) {
-      return next();
-    }
-
-    return next(new ForbiddenError('Access denied: can only access your own resources'));
-  };
-};
-
-/**
- * Require email to be verified
- */
-const requireEmailVerified = (req, res, next) => {
-  if (!req.user) {
-    return next(new UnauthorizedError('Authentication required'));
-  }
-
-  if (!req.user.emailVerified) {
-    return next(new ForbiddenError('Email verification required'));
-  }
-
-  next();
-};
-
-/**
- * Extract refresh token from cookies or body
- */
-const extractRefreshToken = (req, res, next) => {
-  // Try to get refresh token from cookie first
-  let refreshToken = req.cookies?.refreshToken;
-  
-  // Fallback to body
-  if (!refreshToken && req.body) {
-    refreshToken = req.body.refreshToken;
-  }
-
-  if (!refreshToken) {
-    return next(new UnauthorizedError('Refresh token required'));
-  }
-
-  req.refreshToken = refreshToken;
-  next();
-};
-
-/**
- * Rate limiting by user
- */
-const rateLimitByUser = (windowMs = 15 * 60 * 1000, maxRequests = 100) => {
-  const userRequests = new Map();
-
-  return (req, res, next) => {
-    if (!req.user) {
-      return next(); // Skip rate limiting for unauthenticated requests
-    }
-
-    const userId = req.user.userId;
-    const now = Date.now();
-    const windowStart = now - windowMs;
-
-    // Clean old entries
-    if (userRequests.has(userId)) {
-      const requests = userRequests.get(userId).filter(timestamp => timestamp > windowStart);
-      userRequests.set(userId, requests);
-    } else {
-      userRequests.set(userId, []);
-    }
-
-    const requests = userRequests.get(userId);
-
-    if (requests.length >= maxRequests) {
-      return res.status(429).json({
-        error: 'Too many requests',
-        message: `Rate limit exceeded. Try again in ${Math.ceil(windowMs / 1000)} seconds.`
+    if (!token) {
+      return res.status(401).json({
+        error: 'Access denied',
+        message: 'No token provided'
       });
     }
 
-    requests.push(now);
+    const decoded = verifyToken(token, config.jwt.accessTokenSecret);
+    
+    // Get user from database to ensure it still exists and is active
+    const user = await User.findById(decoded.userId);
+    
+    if (!user) {
+      return res.status(401).json({
+        error: 'Access denied',
+        message: 'User not found'
+      });
+    }
+
+    if (user.status !== 'active') {
+      return res.status(403).json({
+        error: 'Access denied',
+        message: 'Account is disabled'
+      });
+    }
+
+    // Get user roles
+    const userRoles = await user.getRoles();
+    
+    // Attach user and roles to request
+    req.user = user;
+    req.userRoles = userRoles;
+    req.tokenData = decoded;
+
     next();
+  } catch (error) {
+    if (error.message === 'Token expired') {
+      return res.status(401).json({
+        error: 'Token expired',
+        message: 'Access token has expired'
+      });
+    }
+    
+    if (error.message === 'Invalid token') {
+      return res.status(401).json({
+        error: 'Access denied',
+        message: 'Invalid token'
+      });
+    }
+
+    console.error('Authentication error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Authentication failed'
+    });
+  }
+};
+
+// Optional authentication (for endpoints that work with or without auth)
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const token = extractToken(req);
+    
+    if (!token) {
+      return next();
+    }
+
+    const decoded = verifyToken(token, config.jwt.accessTokenSecret);
+    const user = await User.findById(decoded.userId);
+    
+    if (user && user.status === 'active') {
+      const userRoles = await user.getRoles();
+      req.user = user;
+      req.userRoles = userRoles;
+      req.tokenData = decoded;
+    }
+
+    next();
+  } catch (error) {
+    // In optional auth, we don't fail on errors, just continue without user
+    next();
+  }
+};
+
+// Authorization middleware factory
+const authorize = (requiredRoles = [], options = {}) => {
+  return async (req, res, next) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          error: 'Access denied',
+          message: 'Authentication required'
+        });
+      }
+
+      // If no specific roles required, just check if user is authenticated
+      if (requiredRoles.length === 0) {
+        return next();
+      }
+
+      // Check if user has any of the required roles
+      const userRoleNames = req.userRoles.map(role => role.role_name);
+      const hasRole = requiredRoles.some(role => userRoleNames.includes(role));
+
+      if (!hasRole) {
+        return res.status(403).json({
+          error: 'Access denied',
+          message: 'Insufficient permissions'
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Authorization error:', error);
+      return res.status(500).json({
+        error: 'Internal server error',
+        message: 'Authorization failed'
+      });
+    }
+  };
+};
+
+// Admin only middleware
+const requireAdmin = authorize(['admin']);
+
+// Member or admin middleware
+const requireMember = authorize(['member', 'admin']);
+
+// Owner or admin middleware (for accessing own resources)
+const requireOwnerOrAdmin = (getUserIdFromParams = 'userId') => {
+  return async (req, res, next) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          error: 'Access denied',
+          message: 'Authentication required'
+        });
+      }
+
+      const userRoleNames = req.userRoles.map(role => role.role_name);
+      const isAdmin = userRoleNames.includes('admin');
+      
+      // Admin can access anything
+      if (isAdmin) {
+        return next();
+      }
+
+      // Regular users can only access their own resources
+      const targetUserId = req.params[getUserIdFromParams] || req.body[getUserIdFromParams];
+      if (req.user.user_id.toString() === targetUserId.toString()) {
+        return next();
+      }
+
+      return res.status(403).json({
+        error: 'Access denied',
+        message: 'You can only access your own resources'
+      });
+    } catch (error) {
+      console.error('Owner/Admin authorization error:', error);
+      return res.status(500).json({
+        error: 'Internal server error',
+        message: 'Authorization failed'
+      });
+    }
+  };
+};
+
+// Email verification required middleware
+const requireEmailVerification = async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
+        error: 'Access denied',
+        message: 'Authentication required'
+      });
+    }
+
+    if (!req.user.email_verified) {
+      return res.status(403).json({
+        error: 'Email verification required',
+        message: 'Please verify your email address to access this resource'
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error('Email verification middleware error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Verification check failed'
+    });
+  }
+};
+
+// Permission-based authorization
+const requirePermission = (permission) => {
+  return async (req, res, next) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          error: 'Access denied',
+          message: 'Authentication required'
+        });
+      }
+
+      const userRoleNames = req.userRoles.map(role => role.role_name);
+      const hasPermission = Role.hasPermission(userRoleNames, permission);
+
+      if (!hasPermission) {
+        return res.status(403).json({
+          error: 'Access denied',
+          message: `Permission '${permission}' required`
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Permission authorization error:', error);
+      return res.status(500).json({
+        error: 'Internal server error',
+        message: 'Permission check failed'
+      });
+    }
   };
 };
 
 module.exports = {
   authenticate,
   optionalAuthenticate,
-  requireRole,
-  requireAnyRole,
+  authorize,
   requireAdmin,
+  requireMember,
   requireOwnerOrAdmin,
-  requireEmailVerified,
-  extractRefreshToken,
-  rateLimitByUser
+  requireEmailVerification,
+  requirePermission,
+  extractToken,
+  verifyToken
 };

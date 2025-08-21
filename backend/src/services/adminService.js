@@ -1,426 +1,497 @@
-const db = require('../adapters/database');
-const emailAdapter = require('../adapters/email');
-const { 
-  generateId, 
-  generateInviteCode, 
-  getCurrentTimestamp, 
-  getFutureTimestamp,
-  calculatePagination,
-  formatPaginationResponse
-} = require('../utils/helpers');
-const { NotFoundError, ValidationError, UnauthorizedError, ConflictError } = require('../utils/errors');
+const { User, Role, Session, EmailVerification, PasswordReset } = require('../models');
+const { AppError } = require('../middleware/errorHandler');
+const database = require('../config/database');
 
 class AdminService {
-
-  /**
-   * Create audit log entry
-   */
-  async createAuditLog(actorId, action, resourceType, resourceId = null, metadata = null, req = null) {
-    const logData = {
-      log_id: generateId(),
-      actor_id: actorId,
-      action,
-      resource_type: resourceType,
-      resource_id: resourceId,
-      metadata,
-      ip_address: req ? req.ip : null,
-      user_agent: req ? req.get('User-Agent') : null,
-      created_at: getCurrentTimestamp()
-    };
-
-    return await db.createAuditLog(logData);
-  }
-
-  /**
-   * Get dashboard statistics
-   */
-  async getDashboardStats() {
-    const totalUsers = await db.listUsers({ limit: 1 });
-    const activeUsers = await db.listUsers({ status: 'active', limit: 1 });
-    const pendingInvites = await db.listInvites({ status: 'pending', limit: 1 });
-    
-    // Get recent activity (last 24 hours)
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const recentActivity = await db.listAuditLogs({
-      startDate: yesterday.toISOString(),
-      limit: 10
-    });
-
-    return {
-      users: {
-        total: totalUsers.total,
-        active: activeUsers.total,
-        inactive: totalUsers.total - activeUsers.total
-      },
-      invites: {
-        pending: pendingInvites.total
-      },
-      recentActivity: recentActivity.logs.map(log => ({
-        id: log.log_id,
-        actor: log.actor ? `${log.actor.first_name} ${log.actor.last_name}` : 'Unknown',
-        action: log.action,
-        resourceType: log.resource_type,
-        timestamp: log.created_at,
-        metadata: log.metadata
-      }))
-    };
-  }
-
-  /**
-   * List all users with pagination
-   */
-  async listUsers(options = {}) {
-    const { page = 1, limit = 20, status, role } = options;
-    const { offset } = calculatePagination(page, limit);
-
-    const result = await db.listUsers({ offset, limit, status, role });
-    
-    return formatPaginationResponse(
-      result.users.map(user => ({
-        userId: user.user_id,
-        email: user.email,
-        firstName: user.first_name,
-        lastName: user.last_name,
-        roles: user.roles,
-        status: user.status,
-        emailVerified: user.email_verified,
-        lastLogin: user.last_login,
-        loginCount: user.login_count,
-        createdAt: user.created_at,
-        updatedAt: user.updated_at
-      })),
-      result.total,
-      parseInt(page),
-      parseInt(limit)
-    );
-  }
-
-  /**
-   * Get user details
-   */
-  async getUserDetails(userId) {
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-
-    const sessions = await db.getUserSessions(userId);
-    const auditLogs = await db.listAuditLogs({ actorId: userId, limit: 20 });
-
-    return {
-      user: {
-        userId: user.user_id,
-        email: user.email,
-        firstName: user.first_name,
-        lastName: user.last_name,
-        roles: user.roles,
-        status: user.status,
-        emailVerified: user.email_verified,
-        lastLogin: user.last_login,
-        loginCount: user.login_count,
-        createdAt: user.created_at,
-        updatedAt: user.updated_at
-      },
-      sessions: sessions.map(session => ({
-        sessionId: session.session_id,
-        createdAt: session.created_at,
-        updatedAt: session.updated_at,
-        expiresAt: session.expires_at,
-        ipAddress: session.ip_address,
-        userAgent: session.user_agent,
-        isActive: session.is_active
-      })),
-      auditLogs: auditLogs.logs.map(log => ({
-        id: log.log_id,
-        action: log.action,
-        resourceType: log.resource_type,
-        resourceId: log.resource_id,
-        metadata: log.metadata,
-        timestamp: log.created_at
-      }))
-    };
-  }
-
-  /**
-   * Update user
-   */
-  async updateUser(adminId, userId, updates, req) {
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-
-    const { firstName, lastName, roles, status } = updates;
-    const updateData = {};
-    
-    if (firstName !== undefined) updateData.first_name = firstName;
-    if (lastName !== undefined) updateData.last_name = lastName;
-    if (roles !== undefined) updateData.roles = roles;
-    if (status !== undefined) updateData.status = status;
-    
-    updateData.updated_at = getCurrentTimestamp();
-
-    const updated = await db.updateUser(userId, updateData);
-    if (!updated) {
-      throw new ValidationError('Failed to update user');
-    }
-
-    // Log the action
-    await this.createAuditLog(
-      adminId,
-      'UPDATE_USER',
-      'user',
-      userId,
-      { updates },
-      req
-    );
-
-    const updatedUser = await db.getUserById(userId);
-    return updatedUser.toJSON();
-  }
-
-  /**
-   * Delete user
-   */
-  async deleteUser(adminId, userId, req) {
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-
-    // Prevent admin from deleting themselves
-    if (adminId === userId) {
-      throw new ValidationError('Cannot delete your own account');
-    }
-
-    const deleted = await db.deleteUser(userId);
-    if (!deleted) {
-      throw new ValidationError('Failed to delete user');
-    }
-
-    // Log the action
-    await this.createAuditLog(
-      adminId,
-      'DELETE_USER',
-      'user',
-      userId,
-      { deletedUser: user.toJSON() },
-      req
-    );
-
-    return { message: 'User deleted successfully' };
-  }
-
-  /**
-   * Create invite
-   */
-  async createInvite(adminId, { email, role = 'member' }, req) {
-    // Check if user already exists
-    const existingUser = await db.getUserByEmail(email);
-    if (existingUser) {
-      throw new ConflictError('User with this email already exists');
-    }
-
-    // Check if there's already a pending invite
-    const existingInvites = await db.listInvites({ status: 'pending' });
-    const existingInvite = existingInvites.invites.find(invite => invite.email === email);
-    
-    if (existingInvite) {
-      throw new ConflictError('There is already a pending invite for this email');
-    }
-
-    const inviteCode = generateInviteCode();
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
-
-    const inviteData = {
-      invite_id: generateId(),
-      invite_code: inviteCode,
-      email,
-      role,
-      created_by: adminId,
-      status: 'pending',
-      expires_at: expiresAt,
-      created_at: getCurrentTimestamp(),
-      updated_at: getCurrentTimestamp()
-    };
-
-    const invite = await db.createInvite(inviteData);
-
-    // Send invite email
+  // Get users with search, filter, and pagination
+  static async getUsers(options = {}) {
     try {
-      await emailAdapter.sendInvite(invite, inviteCode);
-    } catch (error) {
-      console.error('Failed to send invite email:', error);
-      // Don't fail invite creation if email fails
-    }
+      const {
+        query = '',
+        role = '',
+        status = '',
+        limit = 20,
+        offset = 0,
+        sortBy = 'created_at',
+        sortOrder = 'DESC'
+      } = options;
 
-    // Log the action
-    await this.createAuditLog(
-      adminId,
-      'CREATE_INVITE',
-      'invite',
-      invite.invite_id,
-      { email, role },
-      req
-    );
+      // Validate sort parameters
+      const validSortFields = ['email', 'display_name', 'created_at', 'updated_at', 'status'];
+      const validSortOrders = ['ASC', 'DESC'];
 
-    return {
-      inviteId: invite.invite_id,
-      inviteCode,
-      email,
-      role,
-      expiresAt,
-      status: 'pending'
-    };
-  }
-
-  /**
-   * List invites
-   */
-  async listInvites(options = {}) {
-    const { page = 1, limit = 20, status, createdBy } = options;
-    const { offset } = calculatePagination(page, limit);
-
-    const result = await db.listInvites({ offset, limit, status, createdBy });
-    
-    return formatPaginationResponse(
-      result.invites.map(invite => ({
-        inviteId: invite.invite_id,
-        inviteCode: invite.invite_code,
-        email: invite.email,
-        role: invite.role,
-        status: invite.status,
-        createdBy: invite.creator ? `${invite.creator.first_name} ${invite.creator.last_name}` : 'Unknown',
-        acceptedBy: invite.acceptor ? `${invite.acceptor.first_name} ${invite.acceptor.last_name}` : null,
-        createdAt: invite.created_at,
-        expiresAt: invite.expires_at,
-        acceptedAt: invite.accepted_at
-      })),
-      result.total,
-      parseInt(page),
-      parseInt(limit)
-    );
-  }
-
-  /**
-   * Revoke invite
-   */
-  async revokeInvite(adminId, inviteId, req) {
-    const invite = await db.getInvite(inviteId);
-    if (!invite) {
-      throw new NotFoundError('Invite not found');
-    }
-
-    if (invite.status !== 'pending') {
-      throw new ValidationError('Can only revoke pending invites');
-    }
-
-    const deleted = await db.deleteInvite(inviteId);
-    if (!deleted) {
-      throw new ValidationError('Failed to revoke invite');
-    }
-
-    // Log the action
-    await this.createAuditLog(
-      adminId,
-      'REVOKE_INVITE',
-      'invite',
-      inviteId,
-      { email: invite.email, role: invite.role },
-      req
-    );
-
-    return { message: 'Invite revoked successfully' };
-  }
-
-  /**
-   * Get audit logs
-   */
-  async getAuditLogs(options = {}) {
-    const { 
-      page = 1, 
-      limit = 50, 
-      actorId, 
-      action, 
-      resourceType, 
-      startDate, 
-      endDate 
-    } = options;
-    const { offset } = calculatePagination(page, limit);
-
-    const result = await db.listAuditLogs({
-      offset,
-      limit,
-      actorId,
-      action,
-      resourceType,
-      startDate,
-      endDate
-    });
-    
-    return formatPaginationResponse(
-      result.logs.map(log => ({
-        id: log.log_id,
-        actor: log.actor ? {
-          id: log.actor.user_id,
-          name: `${log.actor.first_name} ${log.actor.last_name}`,
-          email: log.actor.email
-        } : null,
-        action: log.action,
-        resourceType: log.resource_type,
-        resourceId: log.resource_id,
-        metadata: log.metadata,
-        ipAddress: log.ip_address,
-        userAgent: log.user_agent,
-        timestamp: log.created_at
-      })),
-      result.total,
-      parseInt(page),
-      parseInt(limit)
-    );
-  }
-
-  /**
-   * Get user roles summary
-   */
-  async getRolesSummary() {
-    // This would ideally be a database aggregation query
-    const result = await db.listUsers({ limit: 1000 }); // Get all users for now
-    
-    const roleCount = {};
-    result.users.forEach(user => {
-      user.roles.forEach(role => {
-        roleCount[role] = (roleCount[role] || 0) + 1;
-      });
-    });
-
-    return roleCount;
-  }
-
-  /**
-   * Bulk update user roles
-   */
-  async bulkUpdateRoles(adminId, userIds, newRoles, req) {
-    const results = [];
-    
-    for (const userId of userIds) {
-      try {
-        const updated = await this.updateUser(adminId, userId, { roles: newRoles }, req);
-        results.push({ userId, success: true, user: updated });
-      } catch (error) {
-        results.push({ userId, success: false, error: error.message });
+      if (!validSortFields.includes(sortBy)) {
+        throw new AppError('Invalid sort field', 400, 'INVALID_SORT_FIELD');
       }
-    }
 
-    return {
-      message: `Bulk update completed`,
-      results,
-      successCount: results.filter(r => r.success).length,
-      failureCount: results.filter(r => !r.success).length
-    };
+      if (!validSortOrders.includes(sortOrder)) {
+        throw new AppError('Invalid sort order', 400, 'INVALID_SORT_ORDER');
+      }
+
+      // Get users and total count
+      const [users, total] = await Promise.all([
+        User.findAll({ query, role, status, limit, offset, sortBy, sortOrder }),
+        User.count({ query, role, status })
+      ]);
+
+      return {
+        users,
+        pagination: {
+          total,
+          limit,
+          offset,
+          page: Math.floor(offset / limit) + 1
+        }
+      };
+    } catch (error) {
+      console.error('Get users error:', error);
+      throw error;
+    }
+  }
+
+  // Get user details by ID
+  static async getUserById(userId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // Get additional user information
+      const [roles, sessions, stats] = await Promise.all([
+        user.getRoles(),
+        Session.getSessionInfo(userId),
+        AdminService.getUserStats(userId)
+      ]);
+
+      return {
+        user: user.toJSON(),
+        roles: roles.map(role => ({
+          role_name: role.role_name,
+          description: role.description,
+          assigned_at: role.created_at,
+          assigned_by: role.assigned_by
+        })),
+        sessions: sessions,
+        stats
+      };
+    } catch (error) {
+      console.error('Get user by ID error:', error);
+      throw error;
+    }
+  }
+
+  // Update user (admin action)
+  static async updateUser(userId, updateData, adminUserId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // Prevent admin from disabling themselves
+      if (userId === adminUserId && updateData.status === 'disabled') {
+        throw new AppError('Cannot disable your own account', 400, 'CANNOT_DISABLE_SELF');
+      }
+
+      // Handle email change
+      if (updateData.email && updateData.email !== user.email) {
+        const existingUser = await User.findByEmail(updateData.email);
+        if (existingUser && existingUser.user_id !== userId) {
+          throw new AppError('Email address is already in use', 409, 'EMAIL_EXISTS');
+        }
+      }
+
+      // Update user
+      const allowedFields = ['email', 'display_name', 'status', 'email_verified'];
+      const updates = {};
+      
+      for (const field of allowedFields) {
+        if (updateData.hasOwnProperty(field)) {
+          updates[field] = updateData[field];
+        }
+      }
+
+      if (Object.keys(updates).length === 0) {
+        throw new AppError('No valid fields to update', 400, 'NO_VALID_FIELDS');
+      }
+
+      const updated = await user.updateProfile(updates);
+      if (!updated) {
+        throw new AppError('Failed to update user', 500, 'UPDATE_FAILED');
+      }
+
+      // If user was disabled, revoke all sessions
+      if (updates.status === 'disabled') {
+        await Session.revokeAllByUserId(userId);
+      }
+
+      // Get updated user data
+      const updatedUser = await User.findById(userId);
+      const roles = await updatedUser.getRoles();
+
+      return {
+        user: {
+          ...updatedUser.toJSON(),
+          roles: roles.map(role => ({
+            role_name: role.role_name,
+            description: role.description,
+            assigned_at: role.created_at
+          }))
+        },
+        message: 'User updated successfully'
+      };
+    } catch (error) {
+      console.error('Update user error:', error);
+      throw error;
+    }
+  }
+
+  // Assign role to user
+  static async assignRole(userId, roleName, adminUserId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // Check if role exists
+      const role = await Role.findByName(roleName);
+      if (!role) {
+        throw new AppError('Role not found', 404, 'ROLE_NOT_FOUND');
+      }
+
+      // Check if user already has the role
+      const hasRole = await user.hasRole(roleName);
+      if (hasRole) {
+        throw new AppError('User already has this role', 409, 'ROLE_ALREADY_ASSIGNED');
+      }
+
+      // Prevent admin from removing admin role from themselves
+      if (userId === adminUserId && roleName === 'admin') {
+        const adminRole = await user.hasRole('admin');
+        if (!adminRole) {
+          throw new AppError('Cannot assign admin role to yourself', 400, 'CANNOT_SELF_ASSIGN_ADMIN');
+        }
+      }
+
+      // Assign role
+      const assigned = await user.assignRole(roleName, adminUserId);
+      if (!assigned) {
+        throw new AppError('Failed to assign role', 500, 'ROLE_ASSIGNMENT_FAILED');
+      }
+
+      return {
+        message: `Role '${roleName}' assigned successfully`,
+        user_id: userId,
+        role_name: roleName,
+        assigned_by: adminUserId
+      };
+    } catch (error) {
+      console.error('Assign role error:', error);
+      throw error;
+    }
+  }
+
+  // Remove role from user
+  static async removeRole(userId, roleName, adminUserId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // Check if user has the role
+      const hasRole = await user.hasRole(roleName);
+      if (!hasRole) {
+        throw new AppError('User does not have this role', 404, 'ROLE_NOT_FOUND');
+      }
+
+      // Prevent admin from removing admin role from themselves
+      if (userId === adminUserId && roleName === 'admin') {
+        throw new AppError('Cannot remove admin role from yourself', 400, 'CANNOT_REMOVE_SELF_ADMIN');
+      }
+
+      // Remove role
+      const removed = await user.removeRole(roleName);
+      if (!removed) {
+        throw new AppError('Failed to remove role', 500, 'ROLE_REMOVAL_FAILED');
+      }
+
+      return {
+        message: `Role '${roleName}' removed successfully`,
+        user_id: userId,
+        role_name: roleName,
+        removed_by: adminUserId
+      };
+    } catch (error) {
+      console.error('Remove role error:', error);
+      throw error;
+    }
+  }
+
+  // Get all roles
+  static async getRoles() {
+    try {
+      const roles = await Role.findAll();
+      const roleStats = await Role.getStats();
+
+      return {
+        roles: roles.map(role => role.toJSON()),
+        statistics: roleStats
+      };
+    } catch (error) {
+      console.error('Get roles error:', error);
+      throw error;
+    }
+  }
+
+  // Get user statistics
+  static async getUserStats(userId) {
+    try {
+      const { rows } = await database.execute(`
+        SELECT 
+          (SELECT COUNT(*) FROM sessions WHERE user_id = ? AND revoked_at IS NULL) as active_sessions,
+          (SELECT COUNT(*) FROM sessions WHERE user_id = ?) as total_sessions,
+          (SELECT COUNT(*) FROM email_verifications WHERE user_id = ?) as email_verifications,
+          (SELECT COUNT(*) FROM password_resets WHERE user_id = ?) as password_resets,
+          (SELECT COUNT(*) FROM user_roles WHERE user_id = ?) as role_count
+      `, [userId, userId, userId, userId, userId]);
+
+      return rows[0] || {};
+    } catch (error) {
+      console.error('Get user stats error:', error);
+      throw error;
+    }
+  }
+
+  // Get dashboard statistics
+  static async getDashboardStats() {
+    try {
+      const { rows } = await database.execute(`
+        SELECT 
+          (SELECT COUNT(*) FROM users WHERE status = 'active') as active_users,
+          (SELECT COUNT(*) FROM users WHERE status = 'disabled') as disabled_users,
+          (SELECT COUNT(*) FROM users WHERE email_verified = 1) as verified_users,
+          (SELECT COUNT(*) FROM users WHERE email_verified = 0) as unverified_users,
+          (SELECT COUNT(*) FROM sessions WHERE revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP(3)) as active_sessions,
+          (SELECT COUNT(*) FROM users WHERE created_at > DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)) as new_users_24h,
+          (SELECT COUNT(*) FROM users WHERE created_at > DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 7 DAY)) as new_users_7d,
+          (SELECT COUNT(*) FROM sessions WHERE created_at > DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)) as new_sessions_24h
+      `);
+
+      // Get role statistics
+      const roleStats = await Role.getStats();
+
+      // Get token statistics
+      const [emailStats, resetStats] = await Promise.all([
+        EmailVerification.getStats(),
+        PasswordReset.getStats()
+      ]);
+
+      return {
+        users: {
+          total: rows[0].active_users + rows[0].disabled_users,
+          active: rows[0].active_users,
+          disabled: rows[0].disabled_users,
+          verified: rows[0].verified_users,
+          unverified: rows[0].unverified_users,
+          new_24h: rows[0].new_users_24h,
+          new_7d: rows[0].new_users_7d
+        },
+        sessions: {
+          active: rows[0].active_sessions,
+          new_24h: rows[0].new_sessions_24h
+        },
+        roles: roleStats,
+        tokens: {
+          email_verifications: emailStats,
+          password_resets: resetStats
+        }
+      };
+    } catch (error) {
+      console.error('Get dashboard stats error:', error);
+      throw error;
+    }
+  }
+
+  // Get system activity log (simplified version)
+  static async getActivityLog(limit = 50, offset = 0) {
+    try {
+      // This is a simplified version - in a real system you'd have an audit log table
+      const { rows } = await database.execute(`
+        SELECT 
+          'user_created' as activity_type,
+          display_name as details,
+          created_at as timestamp,
+          user_id
+        FROM users 
+        WHERE created_at > DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 30 DAY)
+        
+        UNION ALL
+        
+        SELECT 
+          'session_created' as activity_type,
+          CONCAT('IP: ', COALESCE(ip, 'unknown')) as details,
+          created_at as timestamp,
+          user_id
+        FROM sessions 
+        WHERE created_at > DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 7 DAY)
+        
+        ORDER BY timestamp DESC
+        LIMIT ? OFFSET ?
+      `, [limit, offset]);
+
+      // Get total count for pagination
+      const { rows: countRows } = await database.execute(`
+        SELECT COUNT(*) as total FROM (
+          SELECT user_id FROM users WHERE created_at > DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 30 DAY)
+          UNION ALL
+          SELECT user_id FROM sessions WHERE created_at > DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 7 DAY)
+        ) as combined
+      `);
+
+      return {
+        activities: rows,
+        pagination: {
+          total: countRows[0].total,
+          limit,
+          offset,
+          page: Math.floor(offset / limit) + 1
+        }
+      };
+    } catch (error) {
+      console.error('Get activity log error:', error);
+      throw error;
+    }
+  }
+
+  // Force password reset for user
+  static async forcePasswordReset(userId, adminUserId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // Prevent admin from forcing password reset on themselves
+      if (userId === adminUserId) {
+        throw new AppError('Cannot force password reset on yourself', 400, 'CANNOT_FORCE_SELF');
+      }
+
+      // Generate password reset token
+      const PasswordReset = require('../models/PasswordReset');
+      const { token } = await PasswordReset.create(userId);
+
+      // Revoke all user sessions for security
+      await Session.revokeAllByUserId(userId);
+
+      return {
+        message: 'Password reset forced successfully',
+        resetToken: token,
+        user: user.getPublicProfile()
+      };
+    } catch (error) {
+      console.error('Force password reset error:', error);
+      throw error;
+    }
+  }
+
+  // Revoke all user sessions (admin action)
+  static async revokeAllUserSessions(userId, adminUserId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // Prevent admin from revoking their own sessions
+      if (userId === adminUserId) {
+        throw new AppError('Cannot revoke your own sessions', 400, 'CANNOT_REVOKE_SELF');
+      }
+
+      const revokedCount = await Session.revokeAllByUserId(userId);
+
+      return {
+        message: `All sessions revoked for user`,
+        user_id: userId,
+        revoked_sessions: revokedCount
+      };
+    } catch (error) {
+      console.error('Revoke all user sessions error:', error);
+      throw error;
+    }
+  }
+
+  // System cleanup (admin action)
+  static async performSystemCleanup() {
+    try {
+      const AuthService = require('./authService');
+      const cleanup = await AuthService.cleanup();
+
+      return {
+        message: 'System cleanup completed successfully',
+        cleaned: cleanup
+      };
+    } catch (error) {
+      console.error('System cleanup error:', error);
+      throw error;
+    }
+  }
+
+  // Export users data (admin function)
+  static async exportUsersData(filters = {}) {
+    try {
+      const users = await User.findAll({
+        ...filters,
+        limit: 10000, // Large limit for export
+        offset: 0
+      });
+
+      const exportData = {
+        export_date: new Date().toISOString(),
+        export_version: '1.0',
+        filters_applied: filters,
+        total_users: users.length,
+        users: await Promise.all(users.map(async (user) => {
+          const roles = await user.getRoles();
+          return {
+            ...user.toJSON(),
+            roles: roles.map(r => r.role_name)
+          };
+        }))
+      };
+
+      return exportData;
+    } catch (error) {
+      console.error('Export users data error:', error);
+      throw error;
+    }
+  }
+
+  // Validate admin permissions
+  static async validateAdminAccess(userId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        return { valid: false, reason: 'USER_NOT_FOUND' };
+      }
+
+      if (user.status !== 'active') {
+        return { valid: false, reason: 'ACCOUNT_DISABLED' };
+      }
+
+      const hasAdminRole = await user.hasRole('admin');
+      if (!hasAdminRole) {
+        return { valid: false, reason: 'INSUFFICIENT_PERMISSIONS' };
+      }
+
+      return { valid: true, user: user.getPublicProfile() };
+    } catch (error) {
+      console.error('Validate admin access error:', error);
+      return { valid: false, reason: 'VALIDATION_ERROR' };
+    }
   }
 }
 
-module.exports = new AdminService();
+module.exports = AdminService;

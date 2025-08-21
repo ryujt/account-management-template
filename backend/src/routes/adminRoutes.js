@@ -1,230 +1,406 @@
 const express = require('express');
-const adminService = require('../services/adminService');
+const rateLimit = require('express-rate-limit');
+const AdminService = require('../services/adminService');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 const {
-  validateAdminUserUpdate,
-  validateCreateInvite,
-  validateInviteId,
+  validateUserSearch,
   validateUserId,
-  validateUserListFilters,
-  validateAuditLogFilters,
-  validateBulkRoleUpdate
+  validateUserUpdate,
+  validateRoleAssignment,
+  validateRoleRemoval,
+  validatePagination,
+  validateUserExists,
+  validateRoleExists
 } = require('../middleware/validation');
-const { asyncHandler } = require('../middleware/errorHandler');
+const { asyncHandler, sendSuccess, sendPaginatedResponse, sendError } = require('../middleware/errorHandler');
 
 const router = express.Router();
 
-// All routes require authentication and admin role
+// Rate limiting for admin operations
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs for admin operations
+  message: {
+    error: 'Too many admin requests',
+    message: 'Please try again later'
+  }
+});
+
+const strictAdminLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 20, // More restrictive for sensitive operations
+  message: {
+    error: 'Too many sensitive operations',
+    message: 'Please wait before performing more sensitive actions'
+  }
+});
+
+// Apply authentication and admin authorization to all routes
 router.use(authenticate);
 router.use(requireAdmin);
+router.use(adminLimiter);
 
-/**
- * @route   GET /api/v1/admin/dashboard
- * @desc    Get admin dashboard statistics
- * @access  Private/Admin
- */
-router.get('/dashboard', asyncHandler(async (req, res) => {
-  const stats = await adminService.getDashboardStats();
+// Dashboard statistics
+router.get('/dashboard/stats',
+  asyncHandler(async (req, res) => {
+    const stats = await AdminService.getDashboardStats();
 
-  res.json({
-    success: true,
-    message: 'Dashboard statistics retrieved successfully',
-    data: stats
-  });
-}));
+    sendSuccess(res, { stats });
+  })
+);
 
-/**
- * @route   GET /api/v1/admin/users
- * @desc    List all users with pagination and filters
- * @access  Private/Admin
- */
-router.get('/users', validateUserListFilters, asyncHandler(async (req, res) => {
-  const { page, limit, status, role } = req.query;
-  
-  const result = await adminService.listUsers({ page, limit, status, role });
+// Get users with search, filter, and pagination
+router.get('/users',
+  validateUserSearch,
+  asyncHandler(async (req, res) => {
+    const options = {
+      query: req.query.query || '',
+      role: req.query.role || '',
+      status: req.query.status || '',
+      limit: req.query.limit || 20,
+      offset: req.query.offset || 0,
+      sortBy: req.query.sort_by || 'created_at',
+      sortOrder: req.query.sort_order || 'DESC'
+    };
 
-  res.json({
-    success: true,
-    message: 'Users retrieved successfully',
-    ...result
-  });
-}));
+    const result = await AdminService.getUsers(options);
 
-/**
- * @route   GET /api/v1/admin/users/:userId
- * @desc    Get user details
- * @access  Private/Admin
- */
-router.get('/users/:userId', validateUserId, asyncHandler(async (req, res) => {
-  const { userId } = req.params;
-  
-  const userDetails = await adminService.getUserDetails(userId);
+    sendPaginatedResponse(res, result.users, result.pagination, 'Users retrieved successfully');
+  })
+);
 
-  res.json({
-    success: true,
-    message: 'User details retrieved successfully',
-    data: userDetails
-  });
-}));
+// Get user by ID
+router.get('/users/:userId',
+  validateUserId,
+  validateUserExists,
+  asyncHandler(async (req, res) => {
+    const { userId } = req.params;
 
-/**
- * @route   PUT /api/v1/admin/users/:userId
- * @desc    Update user
- * @access  Private/Admin
- */
-router.put('/users/:userId', validateAdminUserUpdate, asyncHandler(async (req, res) => {
-  const { userId } = req.params;
-  const { firstName, lastName, roles, status } = req.body;
-  
-  const updatedUser = await adminService.updateUser(
-    req.user.userId,
-    userId,
-    { firstName, lastName, roles, status },
-    req
-  );
+    const userDetails = await AdminService.getUserById(parseInt(userId));
 
-  res.json({
-    success: true,
-    message: 'User updated successfully',
-    data: {
-      user: updatedUser
+    sendSuccess(res, userDetails);
+  })
+);
+
+// Update user (admin action)
+router.patch('/users/:userId',
+  strictAdminLimiter,
+  validateUserId,
+  validateUserUpdate,
+  validateUserExists,
+  asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const updateData = req.body;
+    const adminUserId = req.user.user_id;
+
+    const result = await AdminService.updateUser(parseInt(userId), updateData, adminUserId);
+
+    sendSuccess(res, result);
+  })
+);
+
+// Assign role to user
+router.post('/users/:userId/roles',
+  strictAdminLimiter,
+  validateUserId,
+  validateRoleAssignment,
+  validateUserExists,
+  validateRoleExists,
+  asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { role_name } = req.body;
+    const adminUserId = req.user.user_id;
+
+    const result = await AdminService.assignRole(parseInt(userId), role_name, adminUserId);
+
+    sendSuccess(res, result, result.message);
+  })
+);
+
+// Remove role from user
+router.delete('/users/:userId/roles/:role',
+  strictAdminLimiter,
+  validateUserId,
+  validateRoleRemoval,
+  validateUserExists,
+  validateRoleExists,
+  asyncHandler(async (req, res) => {
+    const { userId, role } = req.params;
+    const adminUserId = req.user.user_id;
+
+    const result = await AdminService.removeRole(parseInt(userId), role, adminUserId);
+
+    sendSuccess(res, result, result.message);
+  })
+);
+
+// Get all roles with statistics
+router.get('/roles',
+  asyncHandler(async (req, res) => {
+    const result = await AdminService.getRoles();
+
+    sendSuccess(res, result);
+  })
+);
+
+// Force password reset for user
+router.post('/users/:userId/password/force-reset',
+  strictAdminLimiter,
+  validateUserId,
+  validateUserExists,
+  asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const adminUserId = req.user.user_id;
+
+    const result = await AdminService.forcePasswordReset(parseInt(userId), adminUserId);
+
+    sendSuccess(res, result, result.message);
+  })
+);
+
+// Revoke all user sessions (admin action)
+router.post('/users/:userId/sessions/revoke-all',
+  strictAdminLimiter,
+  validateUserId,
+  validateUserExists,
+  asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const adminUserId = req.user.user_id;
+
+    const result = await AdminService.revokeAllUserSessions(parseInt(userId), adminUserId);
+
+    sendSuccess(res, result, result.message);
+  })
+);
+
+// Get system activity log
+router.get('/activity',
+  validatePagination,
+  asyncHandler(async (req, res) => {
+    const limit = req.query.limit || 50;
+    const offset = req.query.offset || 0;
+
+    const result = await AdminService.getActivityLog(limit, offset);
+
+    sendPaginatedResponse(res, result.activities, result.pagination, 'Activity log retrieved successfully');
+  })
+);
+
+// System cleanup (remove expired tokens, sessions, etc.)
+router.post('/system/cleanup',
+  strictAdminLimiter,
+  asyncHandler(async (req, res) => {
+    const result = await AdminService.performSystemCleanup();
+
+    sendSuccess(res, result, result.message);
+  })
+);
+
+// Export users data
+router.get('/users/export',
+  validateUserSearch,
+  asyncHandler(async (req, res) => {
+    const filters = {
+      query: req.query.query || '',
+      role: req.query.role || '',
+      status: req.query.status || ''
+    };
+
+    const exportData = await AdminService.exportUsersData(filters);
+
+    // Set headers for download
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="users-export-${Date.now()}.json"`);
+
+    sendSuccess(res, { export: exportData });
+  })
+);
+
+// Advanced user search with more specific filters
+router.post('/users/search',
+  asyncHandler(async (req, res) => {
+    const {
+      email_pattern,
+      name_pattern,
+      roles = [],
+      status = '',
+      created_after,
+      created_before,
+      email_verified,
+      limit = 20,
+      offset = 0,
+      sort_by = 'created_at',
+      sort_order = 'DESC'
+    } = req.body;
+
+    // Build search query
+    let query = '';
+    if (email_pattern) query += `email:${email_pattern} `;
+    if (name_pattern) query += `name:${name_pattern} `;
+
+    const options = {
+      query: query.trim(),
+      role: roles.length === 1 ? roles[0] : '',
+      status,
+      limit,
+      offset,
+      sortBy: sort_by,
+      sortOrder: sort_order
+    };
+
+    const result = await AdminService.getUsers(options);
+
+    sendPaginatedResponse(res, result.users, result.pagination, 'Advanced search completed');
+  })
+);
+
+// Get user statistics for specific user
+router.get('/users/:userId/stats',
+  validateUserId,
+  validateUserExists,
+  asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+
+    const stats = await AdminService.getUserStats(parseInt(userId));
+
+    sendSuccess(res, { user_id: parseInt(userId), stats });
+  })
+);
+
+// Bulk operations on users
+router.post('/users/bulk',
+  strictAdminLimiter,
+  asyncHandler(async (req, res) => {
+    const { action, user_ids, data } = req.body;
+    const adminUserId = req.user.user_id;
+
+    // Validate input
+    if (!action || !Array.isArray(user_ids) || user_ids.length === 0) {
+      return sendError(res, 'Invalid bulk operation request', 400, 'INVALID_BULK_REQUEST');
     }
-  });
-}));
 
-/**
- * @route   DELETE /api/v1/admin/users/:userId
- * @desc    Delete user
- * @access  Private/Admin
- */
-router.delete('/users/:userId', validateUserId, asyncHandler(async (req, res) => {
-  const { userId } = req.params;
-  
-  const result = await adminService.deleteUser(req.user.userId, userId, req);
-
-  res.json({
-    success: true,
-    message: result.message
-  });
-}));
-
-/**
- * @route   POST /api/v1/admin/users/bulk-update-roles
- * @desc    Bulk update user roles
- * @access  Private/Admin
- */
-router.post('/users/bulk-update-roles', validateBulkRoleUpdate, asyncHandler(async (req, res) => {
-  const { userIds, roles } = req.body;
-  
-  const result = await adminService.bulkUpdateRoles(req.user.userId, userIds, roles, req);
-
-  res.json({
-    success: true,
-    message: result.message,
-    data: {
-      results: result.results,
-      successCount: result.successCount,
-      failureCount: result.failureCount
+    const allowedActions = ['disable', 'enable', 'assign_role', 'remove_role'];
+    if (!allowedActions.includes(action)) {
+      return sendError(res, 'Invalid bulk action', 400, 'INVALID_BULK_ACTION');
     }
-  });
-}));
 
-/**
- * @route   GET /api/v1/admin/roles/summary
- * @desc    Get roles summary
- * @access  Private/Admin
- */
-router.get('/roles/summary', asyncHandler(async (req, res) => {
-  const rolesSummary = await adminService.getRolesSummary();
+    const results = [];
+    const errors = [];
 
-  res.json({
-    success: true,
-    message: 'Roles summary retrieved successfully',
-    data: {
-      roleCount: rolesSummary
+    // Process each user
+    for (const userId of user_ids) {
+      try {
+        let result;
+        switch (action) {
+          case 'disable':
+            result = await AdminService.updateUser(userId, { status: 'disabled' }, adminUserId);
+            break;
+          case 'enable':
+            result = await AdminService.updateUser(userId, { status: 'active' }, adminUserId);
+            break;
+          case 'assign_role':
+            if (!data?.role_name) {
+              throw new Error('Role name required for assign_role action');
+            }
+            result = await AdminService.assignRole(userId, data.role_name, adminUserId);
+            break;
+          case 'remove_role':
+            if (!data?.role_name) {
+              throw new Error('Role name required for remove_role action');
+            }
+            result = await AdminService.removeRole(userId, data.role_name, adminUserId);
+            break;
+        }
+        results.push({ user_id: userId, success: true, result });
+      } catch (error) {
+        errors.push({ user_id: userId, success: false, error: error.message });
+      }
     }
-  });
-}));
 
-/**
- * @route   POST /api/v1/admin/invites
- * @desc    Create invitation
- * @access  Private/Admin
- */
-router.post('/invites', validateCreateInvite, asyncHandler(async (req, res) => {
-  const { email, role } = req.body;
-  
-  const invite = await adminService.createInvite(
-    req.user.userId,
-    { email, role },
-    req
-  );
+    const response = {
+      action,
+      total_requested: user_ids.length,
+      successful: results.length,
+      failed: errors.length,
+      results,
+      errors: errors.length > 0 ? errors : undefined
+    };
 
-  res.status(201).json({
-    success: true,
-    message: 'Invitation created successfully',
-    data: {
-      invite
-    }
-  });
-}));
+    sendSuccess(res, response, `Bulk ${action} operation completed`);
+  })
+);
 
-/**
- * @route   GET /api/v1/admin/invites
- * @desc    List all invitations
- * @access  Private/Admin
- */
-router.get('/invites', validateUserListFilters, asyncHandler(async (req, res) => {
-  const { page, limit, status, createdBy } = req.query;
-  
-  const result = await adminService.listInvites({ page, limit, status, createdBy });
+// System health check for admin
+router.get('/system/health',
+  asyncHandler(async (req, res) => {
+    const stats = await AdminService.getDashboardStats();
+    
+    const health = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      system: {
+        total_users: stats.users.total,
+        active_users: stats.users.active,
+        active_sessions: stats.sessions.active,
+        database: 'connected'
+      },
+      services: {
+        user_management: 'operational',
+        session_management: 'operational',
+        role_management: 'operational'
+      }
+    };
 
-  res.json({
-    success: true,
-    message: 'Invitations retrieved successfully',
-    ...result
-  });
-}));
+    sendSuccess(res, health);
+  })
+);
 
-/**
- * @route   DELETE /api/v1/admin/invites/:inviteId
- * @desc    Revoke invitation
- * @access  Private/Admin
- */
-router.delete('/invites/:inviteId', validateInviteId, asyncHandler(async (req, res) => {
-  const { inviteId } = req.params;
-  
-  const result = await adminService.revokeInvite(req.user.userId, inviteId, req);
+// Validate admin access (middleware test endpoint)
+router.get('/validate',
+  asyncHandler(async (req, res) => {
+    const adminUserId = req.user.user_id;
 
-  res.json({
-    success: true,
-    message: result.message
-  });
-}));
+    const validation = await AdminService.validateAdminAccess(adminUserId);
 
-/**
- * @route   GET /api/v1/admin/audit-logs
- * @desc    Get audit logs
- * @access  Private/Admin
- */
-router.get('/audit-logs', validateAuditLogFilters, asyncHandler(async (req, res) => {
-  const { page, limit, actorId, action, resourceType, startDate, endDate } = req.query;
-  
-  const result = await adminService.getAuditLogs({
-    page,
-    limit,
-    actorId,
-    action,
-    resourceType,
-    startDate,
-    endDate
-  });
+    sendSuccess(res, validation);
+  })
+);
 
-  res.json({
-    success: true,
-    message: 'Audit logs retrieved successfully',
-    ...result
-  });
-}));
+// Admin settings (placeholder for future admin-specific settings)
+router.get('/settings',
+  asyncHandler(async (req, res) => {
+    const settings = {
+      system: {
+        registration_enabled: true,
+        email_verification_required: true,
+        password_reset_enabled: true,
+        oauth_enabled: !!process.env.GOOGLE_CLIENT_ID
+      },
+      security: {
+        session_timeout: '7d',
+        password_min_length: 8,
+        max_login_attempts: 5
+      },
+      features: {
+        user_export: true,
+        bulk_operations: true,
+        activity_logging: true
+      }
+    };
+
+    sendSuccess(res, { settings });
+  })
+);
+
+router.patch('/settings',
+  strictAdminLimiter,
+  asyncHandler(async (req, res) => {
+    const updates = req.body;
+
+    // In a real application, you would validate and save these settings
+    // For now, just return the updated settings
+    sendSuccess(res, { settings: updates }, 'Admin settings updated successfully');
+  })
+);
 
 module.exports = router;

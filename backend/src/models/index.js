@@ -1,54 +1,26 @@
-const sequelize = require('../config/database');
 const User = require('./User');
+const Role = require('./Role');
 const Session = require('./Session');
-const Invite = require('./Invite');
-const AuditLog = require('./AuditLog');
+const EmailVerification = require('./EmailVerification');
+const PasswordReset = require('./PasswordReset');
 
-// Define associations
-User.hasMany(Session, {
-  foreignKey: 'user_id',
-  as: 'sessions'
-});
-
-Session.belongsTo(User, {
-  foreignKey: 'user_id',
-  as: 'user'
-});
-
-User.hasMany(Invite, {
-  foreignKey: 'created_by',
-  as: 'createdInvites'
-});
-
-Invite.belongsTo(User, {
-  foreignKey: 'created_by',
-  as: 'creator'
-});
-
-User.hasMany(Invite, {
-  foreignKey: 'accepted_by',
-  as: 'acceptedInvites'
-});
-
-Invite.belongsTo(User, {
-  foreignKey: 'accepted_by',
-  as: 'acceptor'
-});
-
-User.hasMany(AuditLog, {
-  foreignKey: 'actor_id',
-  as: 'auditLogs'
-});
-
-AuditLog.belongsTo(User, {
-  foreignKey: 'actor_id',
-  as: 'actor'
-});
+// Initialize models and their relationships
+const initializeModels = async () => {
+  try {
+    // Initialize default roles
+    await Role.initializeDefaults();
+    console.log('Models initialized successfully');
+  } catch (error) {
+    console.error('Model initialization error:', error);
+    throw error;
+  }
+};
 
 module.exports = {
-  sequelize,
   User,
+  Role,
   Session,
-  Invite,
-  AuditLog
+  EmailVerification,
+  PasswordReset,
+  initializeModels
 };

@@ -1,34 +1,27 @@
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
-function gitSha() {
-  try {
-    return execSync('git rev-parse --short HEAD').toString().trim();
-  } catch {
-    return 'unknown';
-  }
+// package.json에서 버전 읽기
+const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+const version = packageJson.version;
+const buildTime = new Date().toISOString();
+
+// 빌드 정보를 담은 파일 생성
+const buildInfo = {
+  version,
+  buildTime,
+  env: process.env.NODE_ENV || 'development'
+};
+
+// public 디렉토리에 build-info.json 파일 생성
+const publicDir = path.join(__dirname, 'public');
+if (!fs.existsSync(publicDir)) {
+  fs.mkdirSync(publicDir, { recursive: true });
 }
 
-function isoNow() {
-  return new Date().toISOString();
-}
+fs.writeFileSync(
+  path.join(publicDir, 'build-info.json'),
+  JSON.stringify(buildInfo, null, 2)
+);
 
-function ensureDir(p) {
-  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-}
-
-function main() {
-  const version = {
-    appName: process.env.REACT_APP_APP_NAME || 'Account Management Service',
-    buildTime: isoNow(),
-    git: gitSha()
-  };
-  const outDir = path.join(process.cwd(), 'public');
-  ensureDir(outDir);
-  const outFile = path.join(outDir, 'build-version.json');
-  fs.writeFileSync(outFile, JSON.stringify(version, null, 2), 'utf8');
-  process.stdout.write(outFile + '\n');
-}
-
-main();
+console.log(`Build info updated: version ${version}, built at ${buildTime}`);

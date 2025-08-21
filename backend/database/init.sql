@@ -1,142 +1,91 @@
+-- Account Management Template Database Schema
+-- MySQL Database Initialization Script
+
 -- Create database if it doesn't exist
-CREATE DATABASE IF NOT EXISTS account_management CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
--- Use the database
-USE account_management;
-
--- Create app user with proper permissions
-CREATE USER IF NOT EXISTS 'app_user'@'%' IDENTIFIED BY 'app_password';
-GRANT ALL PRIVILEGES ON account_management.* TO 'app_user'@'%';
-FLUSH PRIVILEGES;
+-- CREATE DATABASE IF NOT EXISTS account_management;
+-- USE account_management;
 
 -- Users table
-CREATE TABLE IF NOT EXISTS users (
-    user_id CHAR(36) PRIMARY KEY,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    roles JSON NOT NULL DEFAULT ('["member"]'),
-    status ENUM('active', 'inactive', 'suspended') NOT NULL DEFAULT 'inactive',
-    email_verified BOOLEAN NOT NULL DEFAULT FALSE,
-    email_verification_token VARCHAR(255) NULL,
-    email_verification_expires DATETIME NULL,
-    password_reset_token VARCHAR(255) NULL,
-    password_reset_expires DATETIME NULL,
-    last_login DATETIME NULL,
-    login_count INT NOT NULL DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
-    INDEX idx_email (email),
-    INDEX idx_status (status),
-    INDEX idx_email_verification_token (email_verification_token),
-    INDEX idx_password_reset_token (password_reset_token),
-    INDEX idx_created_at (created_at)
-);
+CREATE TABLE users (
+  user_id       BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  email         VARCHAR(254) NOT NULL,
+  email_verified TINYINT(1)  NOT NULL DEFAULT 0,
+  password_hash VARCHAR(255) NULL,
+  display_name  VARCHAR(255) NOT NULL,
+  status        ENUM('active','disabled') NOT NULL DEFAULT 'active',
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (user_id),
+  UNIQUE KEY uq_users_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Sessions table
-CREATE TABLE IF NOT EXISTS sessions (
-    session_id CHAR(36) PRIMARY KEY,
-    user_id CHAR(36) NOT NULL,
-    refresh_token TEXT NOT NULL,
-    expires_at DATETIME NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    ip_address VARCHAR(45) NULL,
-    user_agent TEXT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    
-    INDEX idx_user_id (user_id),
-    INDEX idx_refresh_token (refresh_token(255)),
-    INDEX idx_expires_at (expires_at),
-    INDEX idx_is_active (is_active),
-    
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-);
+-- Roles table
+CREATE TABLE roles (
+  role_name   VARCHAR(32) PRIMARY KEY,
+  description VARCHAR(255),
+  created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Invites table
-CREATE TABLE IF NOT EXISTS invites (
-    invite_id CHAR(36) PRIMARY KEY,
-    invite_code VARCHAR(50) NOT NULL UNIQUE,
-    email VARCHAR(255) NOT NULL,
-    role VARCHAR(50) NOT NULL DEFAULT 'member',
-    created_by CHAR(36) NOT NULL,
-    status ENUM('pending', 'accepted', 'expired') NOT NULL DEFAULT 'pending',
-    expires_at DATETIME NOT NULL,
-    accepted_at DATETIME NULL,
-    accepted_by CHAR(36) NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
-    INDEX idx_invite_code (invite_code),
-    INDEX idx_email (email),
-    INDEX idx_created_by (created_by),
-    INDEX idx_status (status),
-    INDEX idx_expires_at (expires_at),
-    
-    FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE CASCADE,
-    FOREIGN KEY (accepted_by) REFERENCES users(user_id) ON DELETE SET NULL
-);
+-- User roles junction table
+CREATE TABLE user_roles (
+  user_id     BIGINT UNSIGNED NOT NULL,
+  role_name   VARCHAR(32) NOT NULL,
+  assigned_by BIGINT UNSIGNED NULL,
+  created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (user_id, role_name),
+  CONSTRAINT fk_user_roles_user        FOREIGN KEY (user_id)   REFERENCES users(user_id)   ON DELETE CASCADE,
+  CONSTRAINT fk_user_roles_role        FOREIGN KEY (role_name) REFERENCES roles(role_name) ON DELETE RESTRICT,
+  CONSTRAINT fk_user_roles_assigned_by FOREIGN KEY (assigned_by) REFERENCES users(user_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Audit logs table
-CREATE TABLE IF NOT EXISTS audit_logs (
-    log_id CHAR(36) PRIMARY KEY,
-    actor_id CHAR(36) NOT NULL,
-    action VARCHAR(100) NOT NULL,
-    resource_type VARCHAR(50) NOT NULL,
-    resource_id VARCHAR(255) NULL,
-    metadata JSON NULL,
-    ip_address VARCHAR(45) NULL,
-    user_agent TEXT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    INDEX idx_actor_id (actor_id),
-    INDEX idx_action (action),
-    INDEX idx_resource_type (resource_type),
-    INDEX idx_created_at (created_at),
-    
-    FOREIGN KEY (actor_id) REFERENCES users(user_id) ON DELETE CASCADE
-);
+-- Sessions table for refresh token management
+CREATE TABLE sessions (
+  session_id         VARCHAR(128) PRIMARY KEY,
+  user_id            BIGINT UNSIGNED NOT NULL,
+  refresh_token_hash VARCHAR(255) NOT NULL,
+  ip                 VARCHAR(64),
+  ua                 VARCHAR(255),
+  created_at         DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at         DATETIME(3) NOT NULL,
+  revoked_at         DATETIME(3) NULL,
+  UNIQUE KEY uq_sessions_token_hash (refresh_token_hash),
+  KEY idx_sessions_user_expires (user_id, expires_at),
+  CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Create default admin user
-INSERT IGNORE INTO users (
-    user_id, 
-    email, 
-    password_hash, 
-    first_name, 
-    last_name, 
-    roles, 
-    status, 
-    email_verified
-) VALUES (
-    UUID(), 
-    'admin@example.com', 
-    '$2a$12$K5Kx7r8g8qF9Z2vL4mN1U.c7QKd3.gF9Z8r3K5Kx7r8g8qF9Z2vL4m', -- password: admin123
-    'Admin', 
-    'User', 
-    JSON_ARRAY('admin', 'member'), 
-    'active', 
-    TRUE
-);
+-- Email verification tokens
+CREATE TABLE email_verifications (
+  token_id    VARCHAR(128) PRIMARY KEY,
+  user_id     BIGINT UNSIGNED NOT NULL,
+  token_hash  VARCHAR(255) NOT NULL,
+  created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at  DATETIME(3) NOT NULL,
+  consumed_at DATETIME(3) NULL,
+  UNIQUE KEY uq_email_verifications_token_hash (token_hash),
+  KEY idx_email_verifications_user (user_id),
+  CONSTRAINT fk_email_verifications_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Create sample member user
-INSERT IGNORE INTO users (
-    user_id, 
-    email, 
-    password_hash, 
-    first_name, 
-    last_name, 
-    roles, 
-    status, 
-    email_verified
-) VALUES (
-    UUID(), 
-    'user@example.com', 
-    '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewfC6JRs.kF5.Cu.', -- password: admin123
-    'John', 
-    'Doe', 
-    JSON_ARRAY('member'), 
-    'active', 
-    TRUE
-);
+-- Password reset tokens
+CREATE TABLE password_resets (
+  token_id    VARCHAR(128) PRIMARY KEY,
+  user_id     BIGINT UNSIGNED NOT NULL,
+  token_hash  VARCHAR(255) NOT NULL,
+  created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at  DATETIME(3) NOT NULL,
+  consumed_at DATETIME(3) NULL,
+  UNIQUE KEY uq_password_resets_token_hash (token_hash),
+  KEY idx_password_resets_user (user_id),
+  CONSTRAINT fk_password_resets_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Insert default roles
+INSERT INTO roles (role_name, description) VALUES
+('member', 'Regular user with basic permissions'),
+('admin', 'Administrator with full permissions');
+
+-- Create indexes for better performance
+CREATE INDEX idx_users_email_status ON users(email, status);
+CREATE INDEX idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX idx_email_verifications_expires ON email_verifications(expires_at);
+CREATE INDEX idx_password_resets_expires ON password_resets(expires_at);

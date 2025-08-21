@@ -1,60 +1,314 @@
-/* Auth Pages */
-.auth-container {
-  min-height: calc(100vh - 60px);
+/* 인증 페이지 스타일 */
+
+.login-container {
+  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 1rem;
 }
 
-.auth-form {
+.login-card {
   background: white;
-  padding: 40px;
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  padding: 2.5rem;
+  border-radius: 1rem;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
   width: 100%;
   max-width: 400px;
 }
 
-.auth-form h2 {
+.login-header {
   text-align: center;
-  margin-bottom: 32px;
-  color: #333;
+  margin-bottom: 2rem;
 }
 
-.auth-form .form-group {
-  margin-bottom: 20px;
+.login-header h1 {
+  font-size: 1.875rem;
+  font-weight: 700;
+  color: #111827;
+  margin-bottom: 0.5rem;
 }
 
-.auth-form .btn {
-  width: 100%;
-  padding: 12px;
-  font-size: 16px;
-  margin-top: 8px;
+.login-header p {
+  color: #6b7280;
+  font-size: 0.875rem;
 }
 
-.auth-links {
-  text-align: center;
-  margin-top: 24px;
-  padding-top: 24px;
-  border-top: 1px solid #eee;
+.login-form {
+  display: flex;
+  flex-direction: column;
 }
 
-.auth-links a {
-  color: #007bff;
-  text-decoration: none;
-  font-size: 14px;
+.login-form .form-group {
+  margin-bottom: 1.5rem;
+}
+
+.login-form label {
   display: block;
-  margin-bottom: 8px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
 }
 
-.auth-links a:hover {
+.login-form input {
+  width: 100%;
+  padding: 0.875rem 1rem;
+  border: 2px solid #e5e7eb;
+  border-radius: 0.75rem;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+  background-color: #f9fafb;
+}
+
+.login-form input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background-color: white;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.login-form input::placeholder {
+  color: #9ca3af;
+}
+
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.875rem;
+  color: #374151;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  margin-right: 0.75rem;
+  accent-color: #3b82f6;
+}
+
+.checkmark {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid #d1d5db;
+  border-radius: 0.25rem;
+  margin-right: 0.75rem;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.checkbox-label input[type="checkbox"]:checked + .checkmark {
+  background-color: #3b82f6;
+  border-color: #3b82f6;
+}
+
+.checkbox-label input[type="checkbox"]:checked + .checkmark::after {
+  content: '';
+  position: absolute;
+  left: 0.2rem;
+  top: 0.1rem;
+  width: 0.25rem;
+  height: 0.5rem;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.login-button {
+  width: 100%;
+  padding: 0.875rem;
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  color: white;
+  border: none;
+  border-radius: 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.login-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+  box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.39);
+}
+
+.login-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.login-footer {
+  text-align: center;
+  padding-top: 1rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.system-info {
+  color: #9ca3af;
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+/* 에러 메시지 스타일 */
+.login-form .error-message {
+  background-color: #fee2e2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* 성공 메시지 */
+.success-message {
+  background-color: #d1fae5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* 링크 스타일 */
+.auth-link {
+  color: #3b82f6;
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.auth-link:hover {
+  color: #1d4ed8;
   text-decoration: underline;
 }
 
-/* Responsive */
+/* 구글 로그인 버튼 (향후 사용) */
+.google-login-button {
+  width: 100%;
+  padding: 0.875rem;
+  background: white;
+  color: #374151;
+  border: 2px solid #e5e7eb;
+  border-radius: 0.75rem;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.google-login-button:hover {
+  border-color: #d1d5db;
+  background-color: #f9fafb;
+}
+
+/* 로딩 상태 */
+.login-button .loading-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-button .loading-spinner .spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top: 2px solid white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+/* 반응형 */
 @media (max-width: 480px) {
-  .auth-form {
-    padding: 20px;
+  .login-card {
+    padding: 2rem;
+    border-radius: 0.75rem;
+  }
+
+  .login-header h1 {
+    font-size: 1.5rem;
+  }
+
+  .login-form input {
+    padding: 0.75rem;
+  }
+
+  .login-button {
+    padding: 0.75rem;
+    font-size: 0.875rem;
+  }
+}
+
+/* 다크 모드 (향후 구현) */
+@media (prefers-color-scheme: dark) {
+  .login-container {
+    background: linear-gradient(135deg, #4c1d95 0%, #1f2937 100%);
+  }
+
+  .login-card {
+    background: #1f2937;
+    color: white;
+  }
+
+  .login-header h1 {
+    color: white;
+  }
+
+  .login-header p {
+    color: #d1d5db;
+  }
+
+  .login-form label {
+    color: #f3f4f6;
+  }
+
+  .login-form input {
+    background-color: #374151;
+    border-color: #4b5563;
+    color: white;
+  }
+
+  .login-form input::placeholder {
+    color: #9ca3af;
+  }
+
+  .login-form input:focus {
+    border-color: #3b82f6;
+    background-color: #4b5563;
+  }
+
+  .checkbox-label {
+    color: #f3f4f6;
+  }
+
+  .system-info {
+    color: #9ca3af;
   }
 }

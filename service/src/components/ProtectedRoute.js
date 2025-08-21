@@ -1,13 +1,33 @@
 import React from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 
-export default function ProtectedRoute({ children, requireAuth = true }) {
-  const { isAuthenticated } = useAuthStore();
-  
-  if (requireAuth && !isAuthenticated) {
-    window.location.href = '/login';
-    return null;
+const ProtectedRoute = ({ children, requireRole = null }) => {
+  const location = useLocation();
+  const { isAuthenticated, user } = useAuthStore();
+
+  // 인증되지 않은 경우
+  if (!isAuthenticated) {
+    return (
+      <Navigate 
+        to="/login" 
+        state={{ from: location }} 
+        replace 
+      />
+    );
   }
-  
+
+  // 특정 역할이 필요한 경우
+  if (requireRole && (!user?.roles || !user.roles.includes(requireRole))) {
+    return (
+      <Navigate 
+        to="/" 
+        replace 
+      />
+    );
+  }
+
   return children;
-}
+};
+
+export default ProtectedRoute;

@@ -24,10 +24,88 @@ services:
     networks:
       - backend-network
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: account-management-backend
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: account_management
+      DB_USER: app_user
+      DB_PASSWORD: app_password
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      JWT_REFRESH_SECRET: your-super-secret-refresh-key-change-in-production
+      JWT_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      EMAIL_HOST: smtp.gmail.com
+      EMAIL_PORT: 587
+      EMAIL_USER: your-email@gmail.com
+      EMAIL_PASSWORD: your-app-password
+      GOOGLE_CLIENT_ID: your-google-client-id
+      GOOGLE_CLIENT_SECRET: your-google-client-secret
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_TEMP_PASSWORD: TempAdminPass123!
+      FRONTEND_URL: http://localhost:3000
+      ADMIN_URL: http://localhost:3002
+    ports:
+      - "3001:3001"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - backend-network
+      - frontend-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  service:
+    build:
+      context: ./service
+      dockerfile: Dockerfile
+    container_name: account-management-service
+    environment:
+      REACT_APP_API_URL: http://localhost:3001/api
+      REACT_APP_GOOGLE_CLIENT_ID: your-google-client-id
+      REACT_APP_VERSION: 1.0.0
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - frontend-network
+
+  admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    container_name: account-management-admin
+    environment:
+      REACT_APP_API_URL: http://localhost:3001/api
+      REACT_APP_ENV: production
+      REACT_APP_VERSION: 1.0.0
+    ports:
+      - "3002:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - frontend-network
+
 
 volumes:
   mysql_data:
 
 networks:
   backend-network:
+    driver: bridge
+  frontend-network:
     driver: bridge

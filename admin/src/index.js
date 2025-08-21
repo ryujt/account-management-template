@@ -1,8 +1,11 @@
 import React from 'react';
-import { createRoot } from 'react-dom/client';
+import ReactDOM from 'react-dom/client';
 import AdminRouter from './routes/AdminRouter';
 import './styles/index.css';
 
-const container = document.getElementById('root');
-const root = createRoot(container);
-root.render(<AdminRouter />);
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <AdminRouter />
+  </React.StrictMode>
+);

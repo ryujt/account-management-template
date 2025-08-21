@@ -1,192 +1,355 @@
 const express = require('express');
-const authService = require('../services/authService');
-const { authenticate, extractRefreshToken } = require('../middleware/auth');
-const { 
+const rateLimit = require('express-rate-limit');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const config = require('../config/config');
+const AuthService = require('../services/authService');
+const { authenticate, optionalAuthenticate } = require('../middleware/auth');
+const {
   validateRegister,
   validateLogin,
-  validateForgotPassword,
-  validateResetPassword,
+  validatePasswordReset,
+  validatePasswordResetConfirm,
   validateEmailVerification,
-  validateInviteCode
+  validateRefreshToken,
+  validateUniqueEmail
 } = require('../middleware/validation');
-const { asyncHandler } = require('../middleware/errorHandler');
+const { asyncHandler, sendSuccess, sendError } = require('../middleware/errorHandler');
 
 const router = express.Router();
 
-/**
- * @route   POST /api/v1/auth/register
- * @desc    Register a new user
- * @access  Public
- */
-router.post('/register', validateRegister, asyncHandler(async (req, res) => {
-  const { email, password, firstName, lastName, inviteCode } = req.body;
-  
-  const result = await authService.register({
-    email,
-    password,
-    firstName,
-    lastName,
-    inviteCode
-  });
+// Rate limiting for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 requests per windowMs
+  message: {
+    error: 'Too many authentication attempts',
+    message: 'Please try again later'
+  }
+});
 
-  res.status(201).json({
-    success: true,
-    message: result.message,
-    data: {
-      user: result.user
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3, // Limit each IP to 3 registration attempts per hour
+  message: {
+    error: 'Too many registration attempts',
+    message: 'Please try again later'
+  }
+});
+
+const passwordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5, // Limit each IP to 5 password reset requests per hour
+  message: {
+    error: 'Too many password reset requests',
+    message: 'Please try again later'
+  }
+});
+
+// Configure Passport for Google OAuth
+if (config.google.clientId && config.google.clientSecret) {
+  passport.use(new GoogleStrategy({
+    clientID: config.google.clientId,
+    clientSecret: config.google.clientSecret,
+    callbackURL: config.google.callbackURL
+  },
+  async (accessToken, refreshToken, profile, done) => {
+    try {
+      const userProfile = {
+        email: profile.emails[0].value,
+        name: profile.displayName,
+        email_verified: profile.emails[0].verified || true
+      };
+      return done(null, userProfile);
+    } catch (error) {
+      return done(error, null);
     }
-  });
-}));
+  }));
 
-/**
- * @route   POST /api/v1/auth/login
- * @desc    Login user
- * @access  Public
- */
-router.post('/login', validateLogin, asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
-  
-  const result = await authService.login({ email, password }, req);
-
-  // Set refresh token as HTTP-only cookie
-  res.cookie('refreshToken', result.refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 14 * 24 * 60 * 60 * 1000 // 14 days
+  passport.serializeUser((user, done) => {
+    done(null, user);
   });
 
-  res.json({
-    success: true,
-    message: 'Login successful',
-    data: {
+  passport.deserializeUser((obj, done) => {
+    done(null, obj);
+  });
+}
+
+// Register
+router.post('/register',
+  registerLimiter,
+  validateRegister,
+  validateUniqueEmail,
+  asyncHandler(async (req, res) => {
+    const { email, password, display_name } = req.body;
+    
+    const result = await AuthService.register({
+      email,
+      password,
+      display_name
+    });
+
+    sendSuccess(res, {
       user: result.user,
-      accessToken: result.accessToken,
-      expiresIn: result.expiresIn
+      message: 'Registration successful. Please check your email for verification instructions.'
+    }, 'Registration successful', 201);
+  })
+);
+
+// Login
+router.post('/login',
+  authLimiter,
+  validateLogin,
+  asyncHandler(async (req, res) => {
+    const { email, password, remember_me = false } = req.body;
+    
+    const clientInfo = {
+      ip: req.ip,
+      userAgent: req.get('User-Agent')
+    };
+
+    const result = await AuthService.login(email, password, clientInfo);
+
+    // Set refresh token as httpOnly cookie
+    const cookieMaxAge = remember_me ? 
+      config.session.cookieMaxAge * 4 : // Extended for remember me
+      config.session.cookieMaxAge;
+
+    res.cookie('refreshToken', result.tokens.refreshToken, {
+      httpOnly: config.session.cookieHttpOnly,
+      secure: config.session.cookieSecure,
+      sameSite: config.session.cookieSameSite,
+      maxAge: cookieMaxAge
+    });
+
+    sendSuccess(res, {
+      user: result.user,
+      roles: result.roles,
+      accessToken: result.tokens.accessToken,
+      message: 'Login successful'
+    });
+  })
+);
+
+// Google OAuth routes
+if (config.google.clientId) {
+  // Initiate Google OAuth
+  router.get('/oauth/google',
+    passport.authenticate('google', {
+      scope: ['profile', 'email']
+    })
+  );
+
+  // Google OAuth callback
+  router.get('/oauth/google/callback',
+    passport.authenticate('google', { session: false }),
+    asyncHandler(async (req, res) => {
+      const clientInfo = {
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+      };
+
+      const result = await AuthService.oauthLogin(req.user, clientInfo);
+
+      // Set refresh token as httpOnly cookie
+      res.cookie('refreshToken', result.tokens.refreshToken, {
+        httpOnly: config.session.cookieHttpOnly,
+        secure: config.session.cookieSecure,
+        sameSite: config.session.cookieSameSite,
+        maxAge: config.session.cookieMaxAge
+      });
+
+      // Redirect to frontend with success
+      const frontendUrl = config.cors.origin[0] || 'http://localhost:3001';
+      res.redirect(`${frontendUrl}/auth/oauth/success?token=${result.tokens.accessToken}`);
+    })
+  );
+}
+
+// Refresh token
+router.post('/refresh',
+  validateRefreshToken,
+  asyncHandler(async (req, res) => {
+    const refreshToken = req.body.refresh_token || req.cookies.refreshToken;
+
+    const result = await AuthService.refreshToken(refreshToken);
+
+    // Update refresh token cookie if it was rotated
+    if (result.tokens.refreshToken !== refreshToken) {
+      res.cookie('refreshToken', result.tokens.refreshToken, {
+        httpOnly: config.session.cookieHttpOnly,
+        secure: config.session.cookieSecure,
+        sameSite: config.session.cookieSameSite,
+        maxAge: config.session.cookieMaxAge
+      });
     }
-  });
-}));
 
-/**
- * @route   POST /api/v1/auth/refresh
- * @desc    Refresh access token
- * @access  Public (requires refresh token)
- */
-router.post('/refresh', extractRefreshToken, asyncHandler(async (req, res) => {
-  const result = await authService.refresh({
-    refreshToken: req.refreshToken
-  });
+    sendSuccess(res, {
+      user: result.user,
+      roles: result.roles,
+      accessToken: result.tokens.accessToken
+    });
+  })
+);
 
-  res.json({
-    success: true,
-    message: 'Token refreshed successfully',
-    data: {
-      accessToken: result.accessToken,
-      expiresIn: result.expiresIn
+// Logout
+router.post('/logout',
+  optionalAuthenticate,
+  asyncHandler(async (req, res) => {
+    const sessionId = req.tokenData?.sessionId;
+    const userId = req.user?.user_id;
+    
+    if (sessionId || userId) {
+      await AuthService.logout(sessionId, userId);
     }
-  });
-}));
 
-/**
- * @route   POST /api/v1/auth/logout
- * @desc    Logout user
- * @access  Private
- */
-router.post('/logout', authenticate, asyncHandler(async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken || req.body.refreshToken;
-  
-  await authService.logout({
-    userId: req.user.userId,
-    refreshToken
-  });
+    // Clear refresh token cookie
+    res.clearCookie('refreshToken');
 
-  // Clear refresh token cookie
-  res.clearCookie('refreshToken');
+    sendSuccess(res, null, 'Logged out successfully');
+  })
+);
 
-  res.json({
-    success: true,
-    message: 'Logout successful'
-  });
-}));
+// Verify email
+router.post('/verify-email',
+  validateEmailVerification,
+  asyncHandler(async (req, res) => {
+    const { token } = req.body;
 
-/**
- * @route   POST /api/v1/auth/verify-email
- * @desc    Verify email address
- * @access  Public
- */
-router.post('/verify-email', validateEmailVerification, asyncHandler(async (req, res) => {
-  const { token } = req.body;
-  
-  const result = await authService.verifyEmail({ token });
+    const result = await AuthService.verifyEmail(token);
 
-  res.json({
-    success: true,
-    message: result.message
-  });
-}));
+    sendSuccess(res, {
+      user: result.user,
+      message: result.message
+    });
+  })
+);
 
-/**
- * @route   POST /api/v1/auth/forgot-password
- * @desc    Request password reset
- * @access  Public
- */
-router.post('/forgot-password', validateForgotPassword, asyncHandler(async (req, res) => {
-  const { email } = req.body;
-  
-  const result = await authService.forgotPassword({ email });
+// Resend email verification
+router.post('/verify-email/resend',
+  authenticate,
+  authLimiter,
+  asyncHandler(async (req, res) => {
+    const userId = req.user.user_id;
 
-  res.json({
-    success: true,
-    message: result.message
-  });
-}));
+    const result = await AuthService.resendEmailVerification(userId);
 
-/**
- * @route   POST /api/v1/auth/reset-password
- * @desc    Reset password
- * @access  Public
- */
-router.post('/reset-password', validateResetPassword, asyncHandler(async (req, res) => {
-  const { token, newPassword } = req.body;
-  
-  const result = await authService.resetPassword({ token, newPassword });
+    sendSuccess(res, null, result.message);
+  })
+);
 
-  res.json({
-    success: true,
-    message: result.message
-  });
-}));
+// Request password reset
+router.post('/password/forgot',
+  passwordResetLimiter,
+  validatePasswordReset,
+  asyncHandler(async (req, res) => {
+    const { email } = req.body;
 
-/**
- * @route   GET /api/v1/auth/invite/:inviteCode
- * @desc    Get invite details
- * @access  Public
- */
-router.get('/invite/:inviteCode', validateInviteCode, asyncHandler(async (req, res) => {
-  const { inviteCode } = req.params;
-  
-  const result = await authService.redeemInvite({ inviteCode });
+    const result = await AuthService.requestPasswordReset(email);
 
-  res.json({
-    success: true,
-    message: 'Invite details retrieved successfully',
-    data: result.invite
-  });
-}));
+    // Always return success message for security
+    sendSuccess(res, null, 'If the email exists, a password reset link has been sent');
+  })
+);
 
-/**
- * @route   GET /api/v1/auth/me
- * @desc    Get current user
- * @access  Private
- */
-router.get('/me', authenticate, asyncHandler(async (req, res) => {
-  res.json({
-    success: true,
-    message: 'User retrieved successfully',
-    data: {
-      user: req.user
+// Reset password
+router.post('/password/reset',
+  authLimiter,
+  validatePasswordResetConfirm,
+  asyncHandler(async (req, res) => {
+    const { token, password } = req.body;
+
+    const result = await AuthService.resetPassword(token, password);
+
+    sendSuccess(res, {
+      user: result.user,
+      message: result.message
+    });
+  })
+);
+
+// Change password (authenticated)
+router.post('/password/change',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { current_password, password } = req.body;
+    const userId = req.user.user_id;
+
+    // Validate passwords
+    if (!current_password || !password) {
+      return sendError(res, 'Current password and new password are required', 400);
     }
-  });
-}));
+
+    if (password.length < 8) {
+      return sendError(res, 'New password must be at least 8 characters long', 400);
+    }
+
+    if (current_password === password) {
+      return sendError(res, 'New password must be different from current password', 400);
+    }
+
+    const result = await AuthService.changePassword(userId, current_password, password);
+
+    sendSuccess(res, null, result.message);
+  })
+);
+
+// Get current user sessions
+router.get('/sessions',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const userId = req.user.user_id;
+
+    const sessions = await AuthService.getUserSessions(userId);
+
+    sendSuccess(res, { sessions });
+  })
+);
+
+// Revoke session
+router.delete('/sessions/:sessionId',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { sessionId } = req.params;
+    const userId = req.user.user_id;
+
+    const result = await AuthService.revokeSession(sessionId, userId);
+
+    sendSuccess(res, null, result.message);
+  })
+);
+
+// Check authentication status
+router.get('/me',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const userRoles = req.userRoles.map(role => ({
+      role_name: role.role_name,
+      description: role.description
+    }));
+
+    sendSuccess(res, {
+      user: req.user.getPublicProfile(),
+      roles: userRoles,
+      authenticated: true
+    });
+  })
+);
+
+// Health check for auth service
+router.get('/health',
+  asyncHandler(async (req, res) => {
+    const health = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      services: {
+        auth: 'operational',
+        oauth_google: config.google.clientId ? 'configured' : 'not_configured'
+      }
+    };
+
+    sendSuccess(res, health);
+  })
+);
 
 module.exports = router;

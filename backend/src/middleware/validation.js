@@ -1,377 +1,373 @@
 const { body, param, query, validationResult } = require('express-validator');
-const { ValidationError } = require('../utils/errors');
-const { isValidPassword } = require('../utils/helpers');
 
-/**
- * Handle validation errors
- */
+// Handle validation errors
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
-  
   if (!errors.isEmpty()) {
-    const errorDetails = errors.array().map(error => ({
-      field: error.path,
-      message: error.msg,
-      value: error.value
-    }));
-    
-    throw new ValidationError('Validation failed', errorDetails);
+    return res.status(400).json({
+      error: 'Validation error',
+      message: 'Invalid input data',
+      details: errors.array().map(error => ({
+        field: error.path,
+        message: error.msg,
+        value: error.value
+      }))
+    });
   }
-  
   next();
 };
 
-/**
- * Custom password validator
- */
-const passwordValidator = (value) => {
-  if (!isValidPassword(value)) {
-    throw new Error('Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number');
-  }
-  return true;
-};
+// Common validation rules
+const emailValidation = body('email')
+  .isEmail()
+  .withMessage('Must be a valid email address')
+  .normalizeEmail()
+  .isLength({ max: 254 })
+  .withMessage('Email must be less than 254 characters');
 
-/**
- * Registration validation
- */
+const passwordValidation = body('password')
+  .isLength({ min: 8 })
+  .withMessage('Password must be at least 8 characters long')
+  .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+  .withMessage('Password must contain at least one lowercase letter, one uppercase letter, one number, and one special character');
+
+const displayNameValidation = body('display_name')
+  .trim()
+  .isLength({ min: 1, max: 255 })
+  .withMessage('Display name must be between 1 and 255 characters')
+  .matches(/^[a-zA-Z0-9\s\-_.]+$/)
+  .withMessage('Display name can only contain letters, numbers, spaces, hyphens, underscores, and periods');
+
+// User validation schemas
 const validateRegister = [
-  body('email')
-    .isEmail()
-    .withMessage('Please provide a valid email')
-    .normalizeEmail(),
-  
-  body('password')
-    .custom(passwordValidator),
-  
-  body('firstName')
-    .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('First name is required and must be less than 100 characters'),
-  
-  body('lastName')
-    .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('Last name is required and must be less than 100 characters'),
-  
-  body('inviteCode')
-    .optional()
-    .trim()
-    .isLength({ min: 1, max: 50 })
-    .withMessage('Invalid invite code'),
-  
+  emailValidation,
+  passwordValidation,
+  body('password_confirm')
+    .custom((value, { req }) => {
+      if (value !== req.body.password) {
+        throw new Error('Password confirmation does not match password');
+      }
+      return true;
+    }),
+  displayNameValidation,
   handleValidationErrors
 ];
 
-/**
- * Login validation
- */
 const validateLogin = [
-  body('email')
-    .isEmail()
-    .withMessage('Please provide a valid email')
-    .normalizeEmail(),
-  
+  emailValidation,
   body('password')
     .notEmpty()
     .withMessage('Password is required'),
-  
+  body('remember_me')
+    .optional()
+    .isBoolean()
+    .withMessage('Remember me must be a boolean'),
   handleValidationErrors
 ];
 
-/**
- * Password change validation
- */
-const validatePasswordChange = [
-  body('currentPassword')
-    .notEmpty()
-    .withMessage('Current password is required'),
-  
-  body('newPassword')
-    .custom(passwordValidator),
-  
+const validatePasswordReset = [
+  emailValidation,
   handleValidationErrors
 ];
 
-/**
- * Password reset request validation
- */
-const validateForgotPassword = [
-  body('email')
-    .isEmail()
-    .withMessage('Please provide a valid email')
-    .normalizeEmail(),
-  
-  handleValidationErrors
-];
-
-/**
- * Password reset validation
- */
-const validateResetPassword = [
+const validatePasswordResetConfirm = [
   body('token')
     .notEmpty()
-    .withMessage('Reset token is required'),
-  
-  body('newPassword')
-    .custom(passwordValidator),
-  
+    .withMessage('Reset token is required')
+    .isLength({ min: 32, max: 128 })
+    .withMessage('Invalid reset token format'),
+  passwordValidation,
+  body('password_confirm')
+    .custom((value, { req }) => {
+      if (value !== req.body.password) {
+        throw new Error('Password confirmation does not match password');
+      }
+      return true;
+    }),
   handleValidationErrors
 ];
 
-/**
- * Email verification validation
- */
 const validateEmailVerification = [
   body('token')
     .notEmpty()
-    .withMessage('Verification token is required'),
-  
+    .withMessage('Verification token is required')
+    .isLength({ min: 32, max: 128 })
+    .withMessage('Invalid verification token format'),
   handleValidationErrors
 ];
 
-/**
- * Profile update validation
- */
+const validateRefreshToken = [
+  body('refresh_token')
+    .optional()
+    .isString()
+    .withMessage('Refresh token must be a string'),
+  handleValidationErrors
+];
+
+// Profile validation schemas
 const validateProfileUpdate = [
-  body('firstName')
+  emailValidation.optional(),
+  displayNameValidation.optional(),
+  body('current_password')
     .optional()
-    .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('First name must be less than 100 characters'),
-  
-  body('lastName')
-    .optional()
-    .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('Last name must be less than 100 characters'),
-  
+    .notEmpty()
+    .withMessage('Current password is required when updating email'),
   handleValidationErrors
 ];
 
-/**
- * User ID param validation
- */
+const validatePasswordChange = [
+  body('current_password')
+    .notEmpty()
+    .withMessage('Current password is required'),
+  passwordValidation.withMessage('New password must meet security requirements'),
+  body('password_confirm')
+    .custom((value, { req }) => {
+      if (value !== req.body.password) {
+        throw new Error('Password confirmation does not match new password');
+      }
+      return true;
+    }),
+  handleValidationErrors
+];
+
+// Admin validation schemas
+const validateUserSearch = [
+  query('query')
+    .optional()
+    .isString()
+    .isLength({ max: 255 })
+    .withMessage('Search query must be less than 255 characters'),
+  query('role')
+    .optional()
+    .isString()
+    .isIn(['member', 'admin'])
+    .withMessage('Role must be either member or admin'),
+  query('status')
+    .optional()
+    .isString()
+    .isIn(['active', 'disabled'])
+    .withMessage('Status must be either active or disabled'),
+  query('limit')
+    .optional()
+    .isInt({ min: 1, max: 100 })
+    .withMessage('Limit must be between 1 and 100')
+    .toInt(),
+  query('offset')
+    .optional()
+    .isInt({ min: 0 })
+    .withMessage('Offset must be a non-negative integer')
+    .toInt(),
+  query('sort_by')
+    .optional()
+    .isString()
+    .isIn(['email', 'display_name', 'created_at', 'updated_at'])
+    .withMessage('Sort by must be one of: email, display_name, created_at, updated_at'),
+  query('sort_order')
+    .optional()
+    .isString()
+    .isIn(['ASC', 'DESC'])
+    .withMessage('Sort order must be ASC or DESC'),
+  handleValidationErrors
+];
+
 const validateUserId = [
   param('userId')
-    .isUUID()
-    .withMessage('Invalid user ID format'),
-  
+    .isInt({ min: 1 })
+    .withMessage('User ID must be a positive integer')
+    .toInt(),
   handleValidationErrors
 ];
 
-/**
- * Session ID param validation
- */
-const validateSessionId = [
-  param('sessionId')
-    .isUUID()
-    .withMessage('Invalid session ID format'),
-  
-  handleValidationErrors
-];
-
-/**
- * Admin user update validation
- */
-const validateAdminUserUpdate = [
+const validateUserUpdate = [
   param('userId')
-    .isUUID()
-    .withMessage('Invalid user ID format'),
-  
-  body('firstName')
-    .optional()
-    .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('First name must be less than 100 characters'),
-  
-  body('lastName')
-    .optional()
-    .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('Last name must be less than 100 characters'),
-  
-  body('roles')
-    .optional()
-    .isArray()
-    .withMessage('Roles must be an array'),
-  
-  body('roles.*')
-    .optional()
-    .isIn(['admin', 'member'])
-    .withMessage('Invalid role specified'),
-  
+    .isInt({ min: 1 })
+    .withMessage('User ID must be a positive integer')
+    .toInt(),
+  emailValidation.optional(),
+  displayNameValidation.optional(),
   body('status')
     .optional()
-    .isIn(['active', 'inactive', 'suspended'])
-    .withMessage('Invalid status specified'),
-  
-  handleValidationErrors
-];
-
-/**
- * Invite creation validation
- */
-const validateCreateInvite = [
-  body('email')
-    .isEmail()
-    .withMessage('Please provide a valid email')
-    .normalizeEmail(),
-  
-  body('role')
+    .isString()
+    .isIn(['active', 'disabled'])
+    .withMessage('Status must be either active or disabled'),
+  body('email_verified')
     .optional()
-    .isIn(['admin', 'member'])
-    .withMessage('Invalid role specified'),
-  
+    .isBoolean()
+    .withMessage('Email verified must be a boolean'),
   handleValidationErrors
 ];
 
-/**
- * Invite ID param validation
- */
-const validateInviteId = [
-  param('inviteId')
-    .isUUID()
-    .withMessage('Invalid invite ID format'),
-  
+const validateRoleAssignment = [
+  param('userId')
+    .isInt({ min: 1 })
+    .withMessage('User ID must be a positive integer')
+    .toInt(),
+  body('role_name')
+    .notEmpty()
+    .withMessage('Role name is required')
+    .isString()
+    .isIn(['member', 'admin'])
+    .withMessage('Role must be either member or admin'),
   handleValidationErrors
 ];
 
-/**
- * Invite code param validation
- */
-const validateInviteCode = [
-  param('inviteCode')
-    .trim()
-    .isLength({ min: 1, max: 50 })
-    .withMessage('Invalid invite code'),
-  
+const validateRoleRemoval = [
+  param('userId')
+    .isInt({ min: 1 })
+    .withMessage('User ID must be a positive integer')
+    .toInt(),
+  param('role')
+    .notEmpty()
+    .withMessage('Role is required')
+    .isString()
+    .isIn(['member', 'admin'])
+    .withMessage('Role must be either member or admin'),
   handleValidationErrors
 ];
 
-/**
- * Pagination validation
- */
+// Token validation schemas
+const validateToken = [
+  body('token')
+    .notEmpty()
+    .withMessage('Token is required')
+    .isString()
+    .isLength({ min: 10, max: 500 })
+    .withMessage('Token format is invalid'),
+  handleValidationErrors
+];
+
+// Pagination validation
 const validatePagination = [
   query('page')
     .optional()
     .isInt({ min: 1 })
-    .withMessage('Page must be a positive integer'),
-  
+    .withMessage('Page must be a positive integer')
+    .toInt(),
   query('limit')
     .optional()
     .isInt({ min: 1, max: 100 })
-    .withMessage('Limit must be between 1 and 100'),
-  
+    .withMessage('Limit must be between 1 and 100')
+    .toInt(),
   handleValidationErrors
 ];
 
-/**
- * User list filters validation
- */
-const validateUserListFilters = [
-  ...validatePagination,
-  
-  query('status')
-    .optional()
-    .isIn(['active', 'inactive', 'suspended'])
-    .withMessage('Invalid status filter'),
-  
-  query('role')
-    .optional()
-    .isIn(['admin', 'member'])
-    .withMessage('Invalid role filter'),
-  
-  handleValidationErrors
-];
+// Custom validation helpers
+const validateUniqueEmail = async (req, res, next) => {
+  try {
+    if (!req.body.email) {
+      return next();
+    }
 
-/**
- * Audit log filters validation
- */
-const validateAuditLogFilters = [
-  ...validatePagination,
-  
-  query('actorId')
-    .optional()
-    .isUUID()
-    .withMessage('Invalid actor ID format'),
-  
-  query('action')
-    .optional()
-    .trim()
-    .isLength({ min: 1, max: 100 })
-    .withMessage('Invalid action filter'),
-  
-  query('resourceType')
-    .optional()
-    .trim()
-    .isLength({ min: 1, max: 50 })
-    .withMessage('Invalid resource type filter'),
-  
-  query('startDate')
-    .optional()
-    .isISO8601()
-    .withMessage('Invalid start date format'),
-  
-  query('endDate')
-    .optional()
-    .isISO8601()
-    .withMessage('Invalid end date format'),
-  
-  handleValidationErrors
-];
+    const { User } = require('../models');
+    const existingUser = await User.findByEmail(req.body.email);
+    
+    // If updating, allow same email for same user
+    if (existingUser && (!req.params.userId || existingUser.user_id !== parseInt(req.params.userId))) {
+      return res.status(409).json({
+        error: 'Validation error',
+        message: 'Email address is already registered',
+        details: [{
+          field: 'email',
+          message: 'Email address is already in use',
+          value: req.body.email
+        }]
+      });
+    }
 
-/**
- * Bulk role update validation
- */
-const validateBulkRoleUpdate = [
-  body('userIds')
-    .isArray({ min: 1 })
-    .withMessage('User IDs must be a non-empty array'),
-  
-  body('userIds.*')
-    .isUUID()
-    .withMessage('Invalid user ID format'),
-  
-  body('roles')
-    .isArray({ min: 1 })
-    .withMessage('Roles must be a non-empty array'),
-  
-  body('roles.*')
-    .isIn(['admin', 'member'])
-    .withMessage('Invalid role specified'),
-  
-  handleValidationErrors
-];
+    next();
+  } catch (error) {
+    console.error('Email uniqueness validation error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Validation failed'
+    });
+  }
+};
 
-/**
- * Account deletion validation
- */
-const validateDeleteAccount = [
-  body('password')
-    .notEmpty()
-    .withMessage('Password is required for account deletion'),
-  
-  handleValidationErrors
-];
+const validateUserExists = async (req, res, next) => {
+  try {
+    const userId = req.params.userId;
+    if (!userId) {
+      return next();
+    }
+
+    const { User } = require('../models');
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({
+        error: 'Not found',
+        message: 'User not found'
+      });
+    }
+
+    req.targetUser = user;
+    next();
+  } catch (error) {
+    console.error('User existence validation error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Validation failed'
+    });
+  }
+};
+
+const validateRoleExists = async (req, res, next) => {
+  try {
+    const roleName = req.body.role_name || req.params.role;
+    if (!roleName) {
+      return next();
+    }
+
+    const { Role } = require('../models');
+    const role = await Role.findByName(roleName);
+    
+    if (!role) {
+      return res.status(404).json({
+        error: 'Not found',
+        message: 'Role not found'
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error('Role existence validation error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Validation failed'
+    });
+  }
+};
 
 module.exports = {
+  // Handlers
+  handleValidationErrors,
+  
+  // Auth validations
   validateRegister,
   validateLogin,
-  validatePasswordChange,
-  validateForgotPassword,
-  validateResetPassword,
+  validatePasswordReset,
+  validatePasswordResetConfirm,
   validateEmailVerification,
+  validateRefreshToken,
+  
+  // Profile validations
   validateProfileUpdate,
+  validatePasswordChange,
+  
+  // Admin validations
+  validateUserSearch,
   validateUserId,
-  validateSessionId,
-  validateAdminUserUpdate,
-  validateCreateInvite,
-  validateInviteId,
-  validateInviteCode,
+  validateUserUpdate,
+  validateRoleAssignment,
+  validateRoleRemoval,
+  
+  // Common validations
+  validateToken,
   validatePagination,
-  validateUserListFilters,
-  validateAuditLogFilters,
-  validateBulkRoleUpdate,
-  validateDeleteAccount,
-  handleValidationErrors
+  
+  // Custom validators
+  validateUniqueEmail,
+  validateUserExists,
+  validateRoleExists
 };

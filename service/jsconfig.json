@@ -2,17 +2,10 @@
   "compilerOptions": {
     "baseUrl": "src",
     "paths": {
-      "@api/*": ["api/*"],
-      "@components/*": ["components/*"],
-      "@stores/*": ["stores/*"],
-      "@utils/*": ["utils/*"],
-      "@pages/*": ["pages/*"],
-      "@routes/*": ["routes/*"],
-      "@hooks/*": ["hooks/*"],
-      "@layouts/*": ["layouts/*"],
-      "@styles/*": ["styles/*"],
-      "@services/*": ["services/*"],
-      "@config/*": ["config/*"]
+      "*": ["node_modules/*"]
     }
-  }
+  },
+  "include": [
+    "src/**/*"
+  ]
 }

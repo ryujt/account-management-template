@@ -1,23 +1,50 @@
 import React from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 
-export default function ProtectedRoute({ children, requireAuth = true, requireAdmin = false }) {
-  const { isAuthenticated, user } = useAuthStore();
-  
-  if (requireAuth && !isAuthenticated) {
-    window.location.href = '/login';
-    return null;
-  }
-  
-  if (requireAdmin && (!user || !user.roles?.includes('admin'))) {
+const ProtectedRoute = ({ children, requireRole = 'admin' }) => {
+  const location = useLocation();
+  const { isAuthenticated, user, isValidAdmin } = useAuthStore();
+
+  // 인증되지 않은 경우
+  if (!isAuthenticated) {
     return (
-      <div className="error-container">
-        <h2>접근 권한이 없습니다</h2>
-        <p>관리자 권한이 필요한 페이지입니다.</p>
-        <a href="http://localhost:3001" className="btn btn-primary">서비스 페이지로 이동</a>
-      </div>
+      <Navigate 
+        to="/login" 
+        state={{ from: location }} 
+        replace 
+      />
     );
   }
-  
+
+  // 관리자 권한이 없는 경우
+  if (!isValidAdmin()) {
+    return (
+      <Navigate 
+        to="/login" 
+        state={{ 
+          from: location,
+          error: '관리자 권한이 필요합니다.' 
+        }} 
+        replace 
+      />
+    );
+  }
+
+  // 특정 역할이 필요한 경우 (super_admin 등)
+  if (requireRole && requireRole !== 'admin' && (!user?.roles || !user.roles.includes(requireRole))) {
+    return (
+      <Navigate 
+        to="/dashboard" 
+        state={{ 
+          error: '접근 권한이 없습니다.' 
+        }}
+        replace 
+      />
+    );
+  }
+
   return children;
-}
+};
+
+export default ProtectedRoute;

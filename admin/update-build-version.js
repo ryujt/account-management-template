@@ -1,34 +1,21 @@
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
-function gitSha() {
-  try {
-    return execSync('git rev-parse --short HEAD').toString().trim();
-  } catch {
-    return 'unknown';
-  }
+const buildPath = path.join(__dirname, 'build');
+const indexPath = path.join(buildPath, 'index.html');
+
+if (fs.existsSync(indexPath)) {
+  const buildTime = new Date().toISOString();
+  let content = fs.readFileSync(indexPath, 'utf8');
+  
+  // Add build version meta tag
+  content = content.replace(
+    '<title>',
+    `<meta name="build-version" content="${buildTime}" />\n    <title>`
+  );
+  
+  fs.writeFileSync(indexPath, content);
+  console.log(`Build version updated: ${buildTime}`);
+} else {
+  console.log('Build directory not found');
 }
-
-function isoNow() {
-  return new Date().toISOString();
-}
-
-function ensureDir(p) {
-  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-}
-
-function main() {
-  const version = {
-    appName: process.env.REACT_APP_APP_NAME || 'Account Management Admin',
-    buildTime: isoNow(),
-    git: gitSha()
-  };
-  const outDir = path.join(process.cwd(), 'public');
-  ensureDir(outDir);
-  const outFile = path.join(outDir, 'build-version.json');
-  fs.writeFileSync(outFile, JSON.stringify(version, null, 2), 'utf8');
-  process.stdout.write(outFile + '\n');
-}
-
-main();

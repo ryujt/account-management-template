@@ -1,112 +1,276 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '../stores/authStore';
+import { useLoadingStore } from '../stores/loadingStore';
 import { userApi } from '../api/userApi';
-import ProtectedRoute from '../components/ProtectedRoute';
-import '../styles/pages.css';
+import LoadingSpinner from '../components/LoadingSpinner';
 
-function ProfileContent() {
-  const { user, updateUser } = useAuthStore();
+const Profile = () => {
+  const { user, setUser } = useAuthStore();
+  const { isActionLoading, setActionLoading } = useLoadingStore();
+  
   const [formData, setFormData] = useState({
-    displayName: user?.displayName || ''
+    displayName: '',
+    email: ''
   });
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [errors, setErrors] = useState({});
+  const [successMessage, setSuccessMessage] = useState('');
+
+  useEffect(() => {
+    loadProfile();
+  }, []);
 
   useEffect(() => {
     if (user) {
       setFormData({
-        displayName: user.displayName || ''
+        displayName: user.displayName || '',
+        email: user.email || ''
       });
     }
   }, [user]);
 
-  const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
+  const loadProfile = async () => {
+    setActionLoading('loadProfile', true);
+    setErrors({});
+
+    try {
+      const response = await userApi.getMyProfile();
+      setUser(response.user);
+    } catch (err) {
+      console.error('Load profile error:', err);
+      setErrors({
+        general: '프로필을 불러오는데 실패했습니다.'
+      });
+    } finally {
+      setActionLoading('loadProfile', false);
+    }
+  };
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+    
+    // 해당 필드의 에러 메시지 제거
+    if (errors[name]) {
+      setErrors(prev => ({
+        ...prev,
+        [name]: ''
+      }));
+    }
+  };
+
+  const validateForm = () => {
+    const newErrors = {};
+
+    if (!formData.displayName) {
+      newErrors.displayName = '이름을 입력해주세요.';
+    } else if (formData.displayName.length < 2) {
+      newErrors.displayName = '이름은 2자 이상 입력해주세요.';
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
-    setSuccess('');
-    setIsLoading(true);
+    
+    if (!validateForm()) return;
+
+    setActionLoading('updateProfile', true);
+    setErrors({});
+    setSuccessMessage('');
 
     try {
-      await userApi.updateMe(formData);
-      updateUser(formData);
-      setSuccess('프로필이 성공적으로 업데이트되었습니다.');
+      const response = await userApi.updateMyProfile({
+        displayName: formData.displayName
+      });
+
+      setUser(response.user);
+      setSuccessMessage('프로필이 성공적으로 업데이트되었습니다.');
+      setIsEditing(false);
+
     } catch (err) {
-      setError(err.message || '프로필 업데이트에 실패했습니다.');
+      console.error('Update profile error:', err);
+      
+      if (err.response?.data?.errors) {
+        setErrors(err.response.data.errors);
+      } else {
+        setErrors({
+          general: err.response?.data?.message || '프로필 업데이트에 실패했습니다.'
+        });
+      }
     } finally {
-      setIsLoading(false);
+      setActionLoading('updateProfile', false);
     }
   };
 
+  const handleCancel = () => {
+    setIsEditing(false);
+    setFormData({
+      displayName: user?.displayName || '',
+      email: user?.email || ''
+    });
+    setErrors({});
+    setSuccessMessage('');
+  };
+
+  if (isActionLoading('loadProfile')) {
+    return (
+      <div className="profile-container">
+        <div className="loading-center">
+          <LoadingSpinner />
+          <p>프로필을 불러오는 중...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="page-container">
-      <div className="profile-section">
-        <h1>프로필 관리</h1>
-        
-        <div className="profile-info">
-          <h2>계정 정보</h2>
-          <div className="info-grid">
-            <div className="info-item">
-              <label>이메일</label>
-              <span>{user?.email}</span>
-            </div>
-            <div className="info-item">
-              <label>역할</label>
-              <span>{user?.roles?.join(', ')}</span>
-            </div>
-            <div className="info-item">
-              <label>이메일 인증</label>
-              <span className={user?.emailVerified ? 'verified' : 'unverified'}>
-                {user?.emailVerified ? '완료' : '미완료'}
-              </span>
-            </div>
-            <div className="info-item">
-              <label>가입일</label>
-              <span>{user?.createdAt ? new Date(user.createdAt).toLocaleDateString() : '-'}</span>
-            </div>
-          </div>
+    <div className="profile-container">
+      <div className="profile-card">
+        <div className="profile-header">
+          <h1>내 프로필</h1>
+          <p>계정 정보를 관리하세요</p>
         </div>
 
-        <div className="profile-edit">
-          <h2>프로필 수정</h2>
-          <form onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label htmlFor="displayName">이름</label>
-              <input
-                type="text"
-                id="displayName"
-                name="displayName"
-                value={formData.displayName}
-                onChange={handleChange}
-                required
-                disabled={isLoading}
-              />
+        {errors.general && (
+          <div className="error-message">
+            {errors.general}
+          </div>
+        )}
+
+        {successMessage && (
+          <div className="success-message">
+            {successMessage}
+          </div>
+        )}
+
+        <div className="profile-content">
+          <div className="profile-info">
+            <div className="info-section">
+              <h3>계정 정보</h3>
+              
+              <div className="info-group">
+                <label>이메일</label>
+                <div className="info-value">
+                  {user?.email}
+                  {user?.emailVerified ? (
+                    <span className="verified-badge">인증됨</span>
+                  ) : (
+                    <span className="unverified-badge">미인증</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="info-group">
+                <label>가입일</label>
+                <div className="info-value">
+                  {user?.createdAt ? new Date(user.createdAt).toLocaleDateString('ko-KR') : '-'}
+                </div>
+              </div>
+
+              <div className="info-group">
+                <label>상태</label>
+                <div className="info-value">
+                  <span className={`status-badge ${user?.status || 'active'}`}>
+                    {user?.status === 'active' ? '활성' : '비활성'}
+                  </span>
+                </div>
+              </div>
+
+              {user?.roles && user.roles.length > 0 && (
+                <div className="info-group">
+                  <label>역할</label>
+                  <div className="info-value">
+                    <div className="roles-container">
+                      {user.roles.map(role => (
+                        <span key={role} className="role-badge">
+                          {role === 'admin' ? '관리자' : role}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-            
-            {error && <div className="error-message">{error}</div>}
-            {success && <div className="success-message">{success}</div>}
-            
-            <button type="submit" className="btn btn-primary" disabled={isLoading}>
-              {isLoading ? '업데이트 중...' : '프로필 업데이트'}
-            </button>
-          </form>
+          </div>
+
+          <div className="profile-form-section">
+            <div className="form-section-header">
+              <h3>개인 정보</h3>
+              {!isEditing && (
+                <button 
+                  onClick={() => setIsEditing(true)}
+                  className="btn-secondary"
+                >
+                  편집
+                </button>
+              )}
+            </div>
+
+            <form onSubmit={handleSubmit} className="profile-form">
+              <div className="form-group">
+                <label htmlFor="displayName">이름</label>
+                <input
+                  type="text"
+                  id="displayName"
+                  name="displayName"
+                  value={formData.displayName}
+                  onChange={handleInputChange}
+                  disabled={!isEditing || isActionLoading('updateProfile')}
+                  className={errors.displayName ? 'error' : ''}
+                />
+                {errors.displayName && <div className="field-error">{errors.displayName}</div>}
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="email">이메일</label>
+                <input
+                  type="email"
+                  id="email"
+                  name="email"
+                  value={formData.email}
+                  disabled
+                  className="disabled"
+                />
+                <div className="form-hint">
+                  이메일은 변경할 수 없습니다
+                </div>
+              </div>
+
+              {isEditing && (
+                <div className="form-actions">
+                  <button 
+                    type="button"
+                    onClick={handleCancel}
+                    className="btn-secondary"
+                    disabled={isActionLoading('updateProfile')}
+                  >
+                    취소
+                  </button>
+                  <button 
+                    type="submit"
+                    className="btn-primary"
+                    disabled={isActionLoading('updateProfile')}
+                  >
+                    {isActionLoading('updateProfile') ? (
+                      <LoadingSpinner size="small" />
+                    ) : (
+                      '저장'
+                    )}
+                  </button>
+                </div>
+              )}
+            </form>
+          </div>
         </div>
       </div>
     </div>
   );
-}
+};
 
-export default function Profile() {
-  return (
-    <ProtectedRoute requireAuth={true}>
-      <ProfileContent />
-    </ProtectedRoute>
-  );
-}
+export default Profile;

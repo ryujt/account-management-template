@@ -1,273 +1,350 @@
-const db = require('../adapters/database');
-const { getCurrentTimestamp, calculatePagination, formatPaginationResponse } = require('../utils/helpers');
-const { NotFoundError, ValidationError, UnauthorizedError } = require('../utils/errors');
+const { User, Session } = require('../models');
+const { AppError } = require('../middleware/errorHandler');
+const AuthService = require('./authService');
 
 class UserService {
-
-  /**
-   * Get user profile
-   */
-  async getProfile(userId) {
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-
-    return user.toJSON();
-  }
-
-  /**
-   * Update user profile
-   */
-  async updateProfile(userId, updates) {
-    const { firstName, lastName } = updates;
-    
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-
-    const updateData = {};
-    if (firstName !== undefined) updateData.first_name = firstName;
-    if (lastName !== undefined) updateData.last_name = lastName;
-    updateData.updated_at = getCurrentTimestamp();
-
-    const updated = await db.updateUser(userId, updateData);
-    if (!updated) {
-      throw new ValidationError('Failed to update profile');
-    }
-
-    // Get updated user
-    const updatedUser = await db.getUserById(userId);
-    return updatedUser.toJSON();
-  }
-
-  /**
-   * Change password
-   */
-  async changePassword(userId, { currentPassword, newPassword }) {
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-
-    // Verify current password
-    const isCurrentPasswordValid = await user.comparePassword(currentPassword);
-    if (!isCurrentPasswordValid) {
-      throw new UnauthorizedError('Current password is incorrect');
-    }
-
-    // Update password
-    const updated = await db.updateUser(userId, {
-      password_hash: newPassword, // Will be hashed by model hook
-      updated_at: getCurrentTimestamp()
-    });
-
-    if (!updated) {
-      throw new ValidationError('Failed to change password');
-    }
-
-    // Invalidate all sessions except current one for security
-    // Note: We'd need the current session ID to exclude it
-    await db.deleteUserSessions(userId);
-
-    return { message: 'Password changed successfully' };
-  }
-
-  /**
-   * Get user sessions
-   */
-  async getUserSessions(userId) {
-    const sessions = await db.getUserSessions(userId);
-    
-    // Format sessions for response
-    const formattedSessions = sessions.map(session => ({
-      sessionId: session.session_id,
-      createdAt: session.created_at,
-      updatedAt: session.updated_at,
-      expiresAt: session.expires_at,
-      ipAddress: session.ip_address,
-      userAgent: session.user_agent,
-      isActive: session.is_active,
-      isCurrent: false // This would need to be determined by comparing with current session
-    }));
-
-    return formattedSessions;
-  }
-
-  /**
-   * Revoke user session
-   */
-  async revokeSession(userId, sessionId) {
-    const session = await db.getSession(sessionId);
-    if (!session) {
-      throw new NotFoundError('Session not found');
-    }
-
-    if (session.user_id !== userId) {
-      throw new UnauthorizedError('Not authorized to revoke this session');
-    }
-
-    const deleted = await db.deleteSession(sessionId);
-    if (!deleted) {
-      throw new ValidationError('Failed to revoke session');
-    }
-
-    return { message: 'Session revoked successfully' };
-  }
-
-  /**
-   * Revoke all user sessions
-   */
-  async revokeAllSessions(userId, excludeSessionId = null) {
-    const deletedCount = await db.deleteUserSessions(userId, excludeSessionId);
-    
-    return { 
-      message: `${deletedCount} sessions revoked successfully`,
-      revokedCount: deletedCount
-    };
-  }
-
-  /**
-   * Get user statistics
-   */
-  async getUserStats(userId) {
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-
-    const sessions = await db.getUserSessions(userId);
-    
-    return {
-      profile: {
-        userId: user.user_id,
-        email: user.email,
-        firstName: user.first_name,
-        lastName: user.last_name,
-        roles: user.roles,
-        status: user.status,
-        emailVerified: user.email_verified,
-        joinedAt: user.created_at,
-        lastLogin: user.last_login,
-        loginCount: user.login_count
-      },
-      sessions: {
-        active: sessions.filter(s => s.is_active).length,
-        total: sessions.length
+  // Get user profile
+  static async getProfile(userId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
       }
-    };
+
+      // Get user roles
+      const roles = await user.getRoles();
+
+      return {
+        ...user.getPublicProfile(),
+        roles: roles.map(role => ({
+          role_name: role.role_name,
+          description: role.description,
+          assigned_at: role.created_at
+        }))
+      };
+    } catch (error) {
+      console.error('Get profile error:', error);
+      throw error;
+    }
   }
 
-  /**
-   * Delete user account
-   */
-  async deleteAccount(userId, { password }) {
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
+  // Update user profile
+  static async updateProfile(userId, profileData) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
 
-    // Verify password for security
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      throw new UnauthorizedError('Password is incorrect');
-    }
+      // Handle email change
+      if (profileData.email && profileData.email !== user.email) {
+        // Require current password for email change
+        if (!profileData.current_password) {
+          throw new AppError('Current password required for email change', 400, 'PASSWORD_REQUIRED');
+        }
 
-    // Delete user (cascade will handle related records)
-    const deleted = await db.deleteUser(userId);
-    if (!deleted) {
-      throw new ValidationError('Failed to delete account');
-    }
+        // Verify current password
+        if (!user.password_hash) {
+          throw new AppError('Account requires password setup', 400, 'PASSWORD_SETUP_REQUIRED');
+        }
 
-    return { message: 'Account deleted successfully' };
+        const isPasswordValid = await User.verifyPassword(profileData.current_password, user.password_hash);
+        if (!isPasswordValid) {
+          throw new AppError('Current password is incorrect', 400, 'INVALID_PASSWORD');
+        }
+
+        // Check if new email is already in use
+        const existingUser = await User.findByEmail(profileData.email);
+        if (existingUser && existingUser.user_id !== userId) {
+          throw new AppError('Email address is already in use', 409, 'EMAIL_EXISTS');
+        }
+
+        // Set email as unverified when changed
+        profileData.email_verified = false;
+      }
+
+      // Remove sensitive fields
+      delete profileData.current_password;
+      delete profileData.password;
+      delete profileData.password_hash;
+      delete profileData.user_id;
+
+      // Update profile
+      const updated = await user.updateProfile(profileData);
+      if (!updated) {
+        throw new AppError('No changes made to profile', 400, 'NO_CHANGES');
+      }
+
+      // Get updated user data
+      const updatedUser = await User.findById(userId);
+      const roles = await updatedUser.getRoles();
+
+      // If email was changed, generate new verification token
+      let verificationToken = null;
+      if (profileData.email && !updatedUser.email_verified) {
+        const EmailVerification = require('../models/EmailVerification');
+        const { token } = await EmailVerification.create(userId);
+        verificationToken = token;
+      }
+
+      const result = {
+        user: {
+          ...updatedUser.getPublicProfile(),
+          roles: roles.map(role => ({
+            role_name: role.role_name,
+            description: role.description,
+            assigned_at: role.created_at
+          }))
+        },
+        message: 'Profile updated successfully'
+      };
+
+      if (verificationToken) {
+        result.verificationToken = verificationToken;
+        result.message += '. Please verify your new email address.';
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Update profile error:', error);
+      throw error;
+    }
   }
 
-  /**
-   * Update user preferences (for future use)
-   */
-  async updatePreferences(userId, preferences) {
-    // This could be extended to store user preferences in a separate table
-    // or in a JSON column in the users table
-    
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
+  // Change password
+  static async changePassword(userId, currentPassword, newPassword) {
+    try {
+      return await AuthService.changePassword(userId, currentPassword, newPassword);
+    } catch (error) {
+      console.error('Change password error:', error);
+      throw error;
     }
-
-    // For now, just return success
-    // In a real implementation, you'd save preferences to database
-    return { 
-      message: 'Preferences updated successfully',
-      preferences 
-    };
   }
 
-  /**
-   * Get user activity summary
-   */
-  async getActivitySummary(userId) {
-    const user = await db.getUserById(userId);
-    if (!user) {
-      throw new NotFoundError('User not found');
+  // Get user sessions
+  static async getSessions(userId) {
+    try {
+      const sessions = await Session.findByUserId(userId);
+      
+      return sessions.map(session => ({
+        session_id: session.session_id,
+        ip: session.ip,
+        user_agent: session.ua,
+        created_at: session.created_at,
+        expires_at: session.expires_at,
+        is_current: false, // This would need session context to determine
+        is_valid: session.isValid()
+      }));
+    } catch (error) {
+      console.error('Get sessions error:', error);
+      throw error;
     }
+  }
 
-    const sessions = await db.getUserSessions(userId);
-    
-    // Get recent audit logs for this user
-    const auditLogs = await db.listAuditLogs({
-      actorId: userId,
-      limit: 10,
-      offset: 0
-    });
+  // Revoke session
+  static async revokeSession(userId, sessionId) {
+    try {
+      return await AuthService.revokeSession(sessionId, userId);
+    } catch (error) {
+      console.error('Revoke session error:', error);
+      throw error;
+    }
+  }
 
-    return {
-      user: {
-        id: user.user_id,
-        email: user.email,
-        name: `${user.first_name} ${user.last_name}`,
+  // Revoke all other sessions (keep current)
+  static async revokeOtherSessions(userId, currentSessionId) {
+    try {
+      const revokedCount = await Session.revokeOtherSessions(userId, currentSessionId);
+      
+      return {
+        message: `${revokedCount} session(s) revoked successfully`,
+        revokedCount
+      };
+    } catch (error) {
+      console.error('Revoke other sessions error:', error);
+      throw error;
+    }
+  }
+
+  // Delete user account
+  static async deleteAccount(userId, password = null) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // Verify password if user has one
+      if (user.password_hash && password) {
+        const isPasswordValid = await User.verifyPassword(password, user.password_hash);
+        if (!isPasswordValid) {
+          throw new AppError('Password is incorrect', 400, 'INVALID_PASSWORD');
+        }
+      }
+
+      // Soft delete - disable account
+      await user.disable();
+
+      // Revoke all sessions
+      await Session.revokeAllByUserId(userId);
+
+      return {
+        message: 'Account deleted successfully'
+      };
+    } catch (error) {
+      console.error('Delete account error:', error);
+      throw error;
+    }
+  }
+
+  // Request email verification
+  static async requestEmailVerification(userId) {
+    try {
+      return await AuthService.resendEmailVerification(userId);
+    } catch (error) {
+      console.error('Request email verification error:', error);
+      throw error;
+    }
+  }
+
+  // Get account statistics
+  static async getAccountStats(userId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // Get session count
+      const sessionCount = await Session.getActiveSessionsCount(userId);
+      
+      // Get roles
+      const roles = await user.getRoles();
+
+      // Get account age
+      const accountAge = Math.floor((new Date() - new Date(user.created_at)) / (1000 * 60 * 60 * 24));
+
+      return {
+        account_created: user.created_at,
+        account_age_days: accountAge,
+        email_verified: user.email_verified,
         status: user.status,
-        lastLogin: user.last_login,
-        loginCount: user.login_count
-      },
-      sessions: {
-        active: sessions.filter(s => s.is_active).length,
-        total: sessions.length
-      },
-      recentActivity: auditLogs.logs.map(log => ({
-        id: log.log_id,
-        action: log.action,
-        resourceType: log.resource_type,
-        resourceId: log.resource_id,
-        timestamp: log.created_at,
-        metadata: log.metadata
-      }))
-    };
+        active_sessions: sessionCount,
+        roles: roles.length,
+        role_names: roles.map(r => r.role_name),
+        last_updated: user.updated_at
+      };
+    } catch (error) {
+      console.error('Get account stats error:', error);
+      throw error;
+    }
   }
 
-  /**
-   * Search users (for admin purposes - should be moved to adminService)
-   */
-  async searchUsers(query, options = {}) {
-    const { page = 1, limit = 20 } = options;
-    const { offset } = calculatePagination(page, limit);
+  // Export user data (GDPR compliance)
+  static async exportUserData(userId) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
 
-    // This is a simple implementation - in production you'd want full-text search
-    const whereClause = {};
-    if (query) {
-      // This would need to be implemented in the database adapter
-      // For now, just return all users
+      // Get roles
+      const roles = await user.getRoles();
+
+      // Get sessions
+      const sessions = await Session.getSessionInfo(userId);
+
+      // Prepare export data
+      const exportData = {
+        user_profile: user.toJSON(),
+        roles: roles,
+        sessions: sessions.map(session => ({
+          session_id: session.session_id,
+          ip: session.ip,
+          user_agent: session.ua,
+          created_at: session.created_at,
+          expires_at: session.expires_at,
+          status: session.status
+        })),
+        export_date: new Date().toISOString(),
+        export_version: '1.0'
+      };
+
+      return exportData;
+    } catch (error) {
+      console.error('Export user data error:', error);
+      throw error;
     }
+  }
 
-    const result = await db.listUsers({ offset, limit });
-    
-    return formatPaginationResponse(
-      result.users.map(user => user.toJSON()),
-      result.total,
-      parseInt(page),
-      parseInt(limit)
-    );
+  // Validate user exists and is active
+  static async validateUser(userId) {
+    try {
+      const user = await User.findById(userId);
+      
+      if (!user) {
+        return { valid: false, reason: 'USER_NOT_FOUND' };
+      }
+
+      if (user.status !== 'active') {
+        return { valid: false, reason: 'ACCOUNT_DISABLED' };
+      }
+
+      return { valid: true, user: user.getPublicProfile() };
+    } catch (error) {
+      console.error('Validate user error:', error);
+      return { valid: false, reason: 'VALIDATION_ERROR' };
+    }
+  }
+
+  // Check if user has specific permission
+  static async hasPermission(userId, permission) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        return false;
+      }
+
+      const roles = await user.getRoles();
+      const roleNames = roles.map(r => r.role_name);
+      
+      const Role = require('../models/Role');
+      return Role.hasPermission(roleNames, permission);
+    } catch (error) {
+      console.error('Check permission error:', error);
+      return false;
+    }
+  }
+
+  // Get user activity summary
+  static async getActivitySummary(userId, days = 30) {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+      }
+
+      // This is a basic implementation - in a real app you might have activity logs
+      const cutoffDate = new Date(Date.now() - (days * 24 * 60 * 60 * 1000));
+      
+      // Get recent sessions
+      const { rows: recentSessions } = require('../config/database').execute(
+        'SELECT COUNT(*) as session_count FROM sessions WHERE user_id = ? AND created_at > ?',
+        [userId, cutoffDate]
+      );
+
+      return {
+        period_days: days,
+        login_count: recentSessions[0]?.session_count || 0,
+        last_login: null, // Would need to track this separately
+        profile_updates: 0, // Would need activity logging
+        password_changes: 0 // Would need activity logging
+      };
+    } catch (error) {
+      console.error('Get activity summary error:', error);
+      throw error;
+    }
   }
 }
 
-module.exports = new UserService();
+module.exports = UserService;

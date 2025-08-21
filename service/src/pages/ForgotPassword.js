@@ -1,35 +1,90 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useLoadingStore } from '../stores/loadingStore';
 import { authApi } from '../api/authApi';
-import '../styles/auth.css';
+import LoadingSpinner from '../components/LoadingSpinner';
 
-export default function ForgotPassword() {
+const ForgotPassword = () => {
+  const { isActionLoading, setActionLoading } = useLoadingStore();
+  
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [isSubmitted, setIsSubmitted] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setActionLoading('forgotPassword', true);
     setError('');
-    setIsLoading(true);
+    setSuccessMessage('');
 
     try {
       await authApi.forgotPassword(email);
-      setSuccess(true);
+      
+      setSuccessMessage(
+        '비밀번호 재설정 링크가 이메일로 전송되었습니다. ' +
+        '이메일을 확인하고 링크를 클릭하여 비밀번호를 재설정해주세요.'
+      );
+      setIsSubmitted(true);
+
     } catch (err) {
-      setError(err.message || '비밀번호 재설정 요청에 실패했습니다.');
+      console.error('Forgot password error:', err);
+      setError(
+        err.response?.data?.message || 
+        '이메일 전송에 실패했습니다. 이메일 주소를 확인하고 다시 시도해주세요.'
+      );
     } finally {
-      setIsLoading(false);
+      setActionLoading('forgotPassword', false);
     }
   };
 
-  if (success) {
+  const handleInputChange = (e) => {
+    setEmail(e.target.value);
+    if (error) setError('');
+  };
+
+  const handleTryAgain = () => {
+    setIsSubmitted(false);
+    setSuccessMessage('');
+    setEmail('');
+  };
+
+  if (isSubmitted && successMessage) {
     return (
       <div className="auth-container">
-        <div className="auth-form">
-          <h2>요청 완료</h2>
-          <p>비밀번호 재설정 링크가 이메일로 발송되었습니다.</p>
-          <a href="/login" className="btn btn-primary">로그인하기</a>
+        <div className="auth-card">
+          <div className="auth-header">
+            <h1>이메일 전송 완료</h1>
+          </div>
+
+          <div className="success-message">
+            {successMessage}
+          </div>
+
+          <div className="forgot-password-actions">
+            <button 
+              onClick={handleTryAgain}
+              className="btn-secondary"
+            >
+              다른 이메일로 재시도
+            </button>
+            
+            <Link to="/login" className="btn-primary">
+              로그인으로 돌아가기
+            </Link>
+          </div>
+
+          <div className="auth-footer">
+            <p>
+              이메일이 오지 않았나요?{' '}
+              <button 
+                onClick={handleTryAgain}
+                className="text-button"
+              >
+                다시 시도
+              </button>
+            </p>
+          </div>
         </div>
       </div>
     );
@@ -37,29 +92,62 @@ export default function ForgotPassword() {
 
   return (
     <div className="auth-container">
-      <div className="auth-form">
-        <h2>비밀번호 재설정</h2>
-        <form onSubmit={handleSubmit}>
+      <div className="auth-card">
+        <div className="auth-header">
+          <h1>비밀번호 찾기</h1>
+          <p>이메일 주소를 입력하시면 비밀번호 재설정 링크를 보내드립니다</p>
+        </div>
+
+        {error && (
+          <div className="error-message">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="auth-form">
           <div className="form-group">
-            <label htmlFor="email">이메일</label>
+            <label htmlFor="email">이메일 주소</label>
             <input
               type="email"
               id="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={handleInputChange}
               required
-              disabled={isLoading}
+              disabled={isActionLoading('forgotPassword')}
+              autoComplete="email"
+              placeholder="example@email.com"
             />
           </div>
-          {error && <div className="error-message">{error}</div>}
-          <button type="submit" className="btn btn-primary" disabled={isLoading}>
-            {isLoading ? '요청 중...' : '재설정 링크 보내기'}
+
+          <button 
+            type="submit" 
+            className="btn-primary"
+            disabled={isActionLoading('forgotPassword')}
+          >
+            {isActionLoading('forgotPassword') ? (
+              <LoadingSpinner size="small" />
+            ) : (
+              '재설정 링크 전송'
+            )}
           </button>
         </form>
-        <div className="auth-links">
-          <a href="/login">로그인하기</a>
+
+        <div className="auth-footer">
+          <p>
+            <Link to="/login" className="auth-link">
+              로그인으로 돌아가기
+            </Link>
+          </p>
+          <p>
+            계정이 없으신가요?{' '}
+            <Link to="/register" className="auth-link">
+              회원가입
+            </Link>
+          </p>
         </div>
       </div>
     </div>
   );
-}
+};
+
+export default ForgotPassword;

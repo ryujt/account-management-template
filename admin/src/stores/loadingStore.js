@@ -1,15 +1,37 @@
 import { create } from 'zustand';
 
 export const useLoadingStore = create((set, get) => ({
-  activeCount: 0,
+  // 전역 로딩 상태
   isLoading: false,
-  start: () => {
-    const n = get().activeCount + 1;
-    set({ activeCount: n, isLoading: n > 0 });
+  
+  // 특정 액션별 로딩 상태
+  loadingStates: {},
+  
+  // 전역 로딩 상태 설정
+  setLoading: (loading) => {
+    set({ isLoading: loading });
   },
-  end: () => {
-    const n = Math.max(0, get().activeCount - 1);
-    set({ activeCount: n, isLoading: n > 0 });
+  
+  // 특정 액션의 로딩 상태 설정
+  setActionLoading: (action, loading) => {
+    set((state) => ({
+      loadingStates: {
+        ...state.loadingStates,
+        [action]: loading
+      }
+    }));
   },
-  reset: () => set({ activeCount: 0, isLoading: false })
+  
+  // 특정 액션의 로딩 상태 확인
+  isActionLoading: (action) => {
+    return get().loadingStates[action] || false;
+  },
+  
+  // 모든 로딩 상태 초기화
+  clearAllLoading: () => {
+    set({
+      isLoading: false,
+      loadingStates: {}
+    });
+  }
 }));
