@@ -34,17 +34,17 @@ AdminDashboardContent --> (/admin/users) : 사용자 목록 로드
 AdminDashboardContent --> (search_filter) : 검색/필터 적용
 (search_filter) --> (/admin/users) : 필터 파라미터와 함께 재요청
 
-AdminDashboardContent --> (/admin/users/#userId) : 상태 변경 요청
-(/admin/users/#userId) --> AdminDashboardContent : success - 상태 변경 완료
-(/admin/users/#userId) --> AdminDashboardContent : error - 상태 변경 실패
+AdminDashboardContent --> (/admin/users/:userId) : 상태 변경 요청
+(/admin/users/:userId) --> AdminDashboardContent : success - 상태 변경 완료
+(/admin/users/:userId) --> AdminDashboardContent : error - 상태 변경 실패
 
-AdminDashboardContent --> (/admin/users/#userId/roles) : 역할 부여 요청
-(/admin/users/#userId/roles) --> AdminDashboardContent : success - 역할 변경 완료
-(/admin/users/#userId/roles) --> AdminDashboardContent : error - 역할 변경 실패
+AdminDashboardContent --> (/admin/users/:userId/roles) : 역할 부여 요청
+(/admin/users/:userId/roles) --> AdminDashboardContent : success - 역할 변경 완료
+(/admin/users/:userId/roles) --> AdminDashboardContent : error - 역할 변경 실패
 
-AdminDashboardContent --> (/admin/users/#userId/roles/#role) : 역할 제거 요청
-(/admin/users/#userId/roles/#role) --> AdminDashboardContent : success - 역할 제거 완료
-(/admin/users/#userId/roles/#role) --> AdminDashboardContent : error - 역할 제거 실패
+AdminDashboardContent --> (/admin/users/:userId/roles/:role) : 역할 제거 요청
+(/admin/users/:userId/roles/:role) --> AdminDashboardContent : success - 역할 제거 완료
+(/admin/users/:userId/roles/:role) --> AdminDashboardContent : error - 역할 제거 실패
 
 AdminDashboardContent --> AdminUserDetail : 상세 보기 링크 클릭
 AdminDashboardContent --> AdminAuditLog : 감사 로그 탭 클릭
@@ -56,21 +56,21 @@ AdminDashboardContent --> AdminAuditLog : 감사 로그 탭 클릭
 AdminUserDetail --> (auth_check) : 인증 및 관리자 권한 확인
 (auth_check) --> AdminLogin : 권한 없음
 (auth_check) --> AdminUserDetailContent : 권한 확인됨
-AdminUserDetailContent --> (/admin/users/#userId) : 사용자 정보 로드
-(/admin/users/#userId) --> AdminUserDetailContent : success - 상세 정보 표시
-(/admin/users/#userId) --> AdminUserDetailContent : error - 사용자 정보 로드 실패
+AdminUserDetailContent --> (/admin/users/:userId) : 사용자 정보 로드
+(/admin/users/:userId) --> AdminUserDetailContent : success - 상세 정보 표시
+(/admin/users/:userId) --> AdminUserDetailContent : error - 사용자 정보 로드 실패
 
-AdminUserDetailContent --> (/admin/users/#userId) : 사용자 정보 업데이트
-(/admin/users/#userId) --> AdminUserDetailContent : success - 정보 업데이트 완료
-(/admin/users/#userId) --> AdminUserDetailContent : error - 업데이트 실패
+AdminUserDetailContent --> (/admin/users/:userId) : 사용자 정보 업데이트
+(/admin/users/:userId) --> AdminUserDetailContent : success - 정보 업데이트 완료
+(/admin/users/:userId) --> AdminUserDetailContent : error - 업데이트 실패
 
-AdminUserDetailContent --> (/admin/users/#userId/roles) : 역할 부여
-(/admin/users/#userId/roles) --> AdminUserDetailContent : success - 역할 부여 완료
-(/admin/users/#userId/roles) --> AdminUserDetailContent : error - 역할 부여 실패
+AdminUserDetailContent --> (/admin/users/:userId/roles) : 역할 부여
+(/admin/users/:userId/roles) --> AdminUserDetailContent : success - 역할 부여 완료
+(/admin/users/:userId/roles) --> AdminUserDetailContent : error - 역할 부여 실패
 
-AdminUserDetailContent --> (/admin/users/#userId/roles/#role) : 역할 제거
-(/admin/users/#userId/roles/#role) --> AdminUserDetailContent : success - 역할 제거 완료
-(/admin/users/#userId/roles/#role) --> AdminUserDetailContent : error - 역할 제거 실패
+AdminUserDetailContent --> (/admin/users/:userId/roles/:role) : 역할 제거
+(/admin/users/:userId/roles/:role) --> AdminUserDetailContent : success - 역할 제거 완료
+(/admin/users/:userId/roles/:role) --> AdminUserDetailContent : error - 역할 제거 실패
 
 AdminUserDetailContent --> AdminDashboard : 목록으로 버튼 클릭
 ```
@@ -105,9 +105,9 @@ AdminAuditLogContent --> AdminDashboard : 사용자 관리 탭 클릭
 ### 사용자 관리
 
 * `(/admin/users)`: 사용자 목록 조회 (필터링 지원)
-* `(/admin/users/#userId)`: 특정 사용자 정보 조회/업데이트
-* `(/admin/users/#userId/roles)`: 사용자 역할 부여
-* `(/admin/users/#userId/roles/#role)`: 사용자 역할 제거
+* `(/admin/users/:userId)`: 특정 사용자 정보 조회/업데이트
+* `(/admin/users/:userId/roles)`: 사용자 역할 부여
+* `(/admin/users/:userId/roles/:role)`: 사용자 역할 제거
 
 ### 초대 관리
 
