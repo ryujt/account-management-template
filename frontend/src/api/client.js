@@ -36,7 +36,15 @@ client.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    if (error.response?.status !== 401 || originalRequest._retry) {
+    // Don't intercept auth endpoint failures (login, register, etc.)
+    const url = originalRequest.url || '';
+    if (
+      error.response?.status !== 401 ||
+      originalRequest._retry ||
+      url.includes('/auth/login') ||
+      url.includes('/auth/register') ||
+      url.includes('/auth/refresh')
+    ) {
       return Promise.reject(error);
     }
 

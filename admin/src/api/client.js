@@ -20,7 +20,9 @@ client.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config;
-    if (error.response?.status === 401 && !original._retry) {
+    const url = original.url || '';
+    const isAuthEndpoint = url.includes('/auth/login') || url.includes('/auth/refresh');
+    if (error.response?.status === 401 && !original._retry && !isAuthEndpoint) {
       original._retry = true;
 
       if (!refreshPromise) {

@@ -44,7 +44,16 @@ router.get(
     try {
       const db = req.app.get('db');
       const result = adminService.listUsers(db, req.query);
-      res.status(200).json(result);
+      // Map snake_case DB columns to camelCase for frontend
+      const items = result.users.map((u) => ({
+        userId: u.user_id,
+        email: u.email,
+        displayName: u.display_name,
+        status: u.status,
+        roles: u.roles,
+        createdAt: u.created_at,
+      }));
+      res.status(200).json({ items, nextCursor: result.nextCursor });
     } catch (err) {
       next(err);
     }
@@ -59,7 +68,9 @@ router.get('/users/:userId', (req, res, next) => {
   try {
     const db = req.app.get('db');
     const detail = adminService.getUserDetail(db, req.params.userId);
-    res.status(200).json(detail);
+    // Wrap in { user, sessions } to match PRD/frontend contract
+    const { sessions, ...userFields } = detail;
+    res.status(200).json({ user: userFields, sessions });
   } catch (err) {
     next(err);
   }
