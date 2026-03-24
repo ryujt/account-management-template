@@ -19,14 +19,13 @@
 | 백엔드 | AWS Lambda (Node.js 24.x), 단일 함수 |
 | 데이터베이스 | Amazon DynamoDB (단일 테이블 설계) |
 | 인증 | JWT (액세스 토큰 + 리프레시 토큰) |
-| 이메일 | Amazon SES (추상화, 로컬은 스텁) |
-| 인프라 | API Gateway → Lambda → DynamoDB |
+| 인프라 | Lambda Function URL → DynamoDB |
 
 ---
 
 ## 대상 사용자와 역할
 
-* **일반 사용자**: 가입, 로그인, 프로필 수정, 비밀번호 변경/재설정, 이메일 인증, 회원 탈퇴
+* **일반 사용자**: 가입, 로그인, 프로필 수정, 비밀번호 변경/재설정, 회원 탈퇴
 * **관리자**: 사용자 목록 조회, 사용자 상태 변경, 역할 관리
 
 역할 기본값: `member`, `admin`
@@ -40,7 +39,6 @@
 * 이메일·비밀번호 기반 인증 (회원가입, 로그인, 로그아웃)
 * 회원 탈퇴 (소프트 삭제)
 * JWT 액세스 토큰 + 리프레시 토큰 기반 세션
-* 이메일 인증
 * 비밀번호 변경 및 재설정
 * 프로필 조회/수정
 * 활성 세션 관리 (조회, 개별 종료)
@@ -48,6 +46,7 @@
 
 ### 제외
 
+* 이메일 인증 (이메일 발송 기능)
 * 소셜 로그인, SSO
 * 다중 조직/테넌트
 * 결제, 구독
@@ -62,12 +61,11 @@
 
 | 기능 | 설명 |
 |------|------|
-| 회원가입 | 이메일·비밀번호·표시이름으로 가입, 인증 메일 발송 |
+| 회원가입 | 이메일·비밀번호·표시이름으로 가입 |
 | 로그인 | 이메일·비밀번호로 인증, 액세스·리프레시 토큰 발급 |
 | 로그아웃 | 현재 세션의 리프레시 토큰 무효화 |
 | 토큰 갱신 | 리프레시 토큰으로 새 액세스 토큰 발급 |
-| 이메일 인증 | 가입 시 발송된 링크 클릭으로 이메일 검증 |
-| 비밀번호 재설정 | 이메일로 재설정 링크 발송 → 새 비밀번호 설정 |
+| 비밀번호 재설정 | 보안 질문 또는 기존 인증 상태에서 새 비밀번호 설정 |
 | 회원 탈퇴 | 계정 비활성화(소프트 삭제), 세션 전체 무효화 |
 
 ### 사용자
@@ -93,9 +91,9 @@
 
 ## 사용자 여정
 
-1. **가입**: 이메일·비밀번호 입력 → 인증 메일 수신 → 링크 클릭으로 인증 완료
+1. **가입**: 이메일·비밀번호 입력 → 가입 완료 → 즉시 로그인 가능
 2. **로그인**: 이메일·비밀번호 → 액세스·리프레시 토큰 발급 → 만료 시 리프레시로 갱신
-3. **비밀번호 분실**: 재설정 요청 → 이메일 링크 → 새 비밀번호 설정
+3. **비밀번호 분실**: 재설정 요청 → 새 비밀번호 설정
 4. **비밀번호 변경**: 로그인 상태에서 현재 비밀번호 확인 후 변경
 5. **회원 탈퇴**: 비밀번호 확인 → 계정 비활성화 → 전체 세션 무효화
 6. **관리자**: 사용자 목록 조회 → 상세 확인 → 상태/역할 변경
@@ -109,10 +107,7 @@
 * 랜딩 페이지
 * 로그인
 * 회원가입
-* 이메일 인증 완료
-* 비밀번호 재설정 요청
-* 비밀번호 재설정 (토큰 링크)
-* 비밀번호 재설정 완료
+* 비밀번호 재설정
 
 ### 사용자 영역
 
@@ -133,14 +128,13 @@
 
 ### 아키텍처
 
-단일 Lambda 함수가 API Gateway로부터 모든 요청을 수신하고, 요청 경로에 따라 내부적으로 라우팅한다.
+단일 Lambda 함수에 Function URL을 활성화하여 HTTP 요청을 직접 수신하고, 요청 경로에 따라 내부적으로 라우팅한다. API Gateway는 사용하지 않는다.
 
 ```
-API Gateway (HTTP API)
-  └─ ANY /{proxy+} → Lambda 함수 (단일)
-       ├─ /auth/*    → authHandler
-       ├─ /user/*    → userHandler
-       └─ /admin/*   → adminHandler
+클라이언트 → Lambda Function URL (단일 함수)
+                 ├─ /auth/*    → authHandler
+                 ├─ /user/*    → userHandler
+                 └─ /admin/*   → adminHandler
 ```
 
 ### 내부 구조
@@ -158,7 +152,7 @@ lambda/
 │   └── adminService.mjs   # 관리자 비즈니스 로직
 ├── adapters/
 │   ├── dynamodb.mjs       # DynamoDB 클라이언트 및 쿼리
-│   └── email.mjs          # 이메일 발송 (SES/스텁)
+│   └── response.mjs       # HTTP 응답 헬퍼
 ├── middleware/
 │   ├── auth.mjs           # JWT 검증, 역할 확인
 │   └── validation.mjs     # 요청 스키마 검증
@@ -212,8 +206,7 @@ lambda/
 ```json
 {
   "userId": "u_123",
-  "email": "user@example.com",
-  "emailVerified": false
+  "email": "user@example.com"
 }
 ```
 
@@ -262,44 +255,12 @@ lambda/
 }
 ```
 
-#### `POST /auth/verify-email` — 이메일 인증
-
-요청:
-```json
-{
-  "token": "<token>"
-}
-```
-
-응답 `200`:
-```json
-{
-  "ok": true
-}
-```
-
-#### `POST /auth/password/forgot` — 비밀번호 재설정 요청
-
-요청:
-```json
-{
-  "email": "user@example.com"
-}
-```
-
-응답 `200`:
-```json
-{
-  "ok": true
-}
-```
-
 #### `POST /auth/password/reset` — 비밀번호 재설정
 
 요청:
 ```json
 {
-  "token": "<token>",
+  "email": "user@example.com",
   "newPassword": "NewP@ss!"
 }
 ```
@@ -320,7 +281,6 @@ lambda/
 {
   "userId": "u_123",
   "email": "user@example.com",
-  "emailVerified": true,
   "displayName": "Ryu",
   "roles": ["member"],
   "createdAt": "2025-08-19T09:00:00Z"
@@ -436,7 +396,6 @@ lambda/
     "displayName": "Ryu",
     "roles": ["member"],
     "status": "active",
-    "emailVerified": true,
     "createdAt": "2025-08-19T09:00:00Z"
   },
   "sessions": [
@@ -504,8 +463,6 @@ lambda/
 | User | `USER#<userId>` | `PROFILE` | 사용자 기본 정보 |
 | EmailIndex | `EMAIL#<email>` | `USER#<userId>` | 이메일 → 사용자 역참조 |
 | Session | `USER#<userId>` | `SESSION#<sessionId>` | 리프레시 토큰, TTL |
-| EmailVerify | `USER#<userId>` | `VERIFY#<tokenId>` | TTL |
-| PwdReset | `USER#<userId>` | `PWRST#<tokenId>` | TTL |
 | UserRole | `USER#<userId>` | `ROLE#<roleName>` | 사용자 역할 |
 | AuditLog | `AUDIT#<yyyy-mm-dd>` | `<timestamp>#<id>` | 감사 로그 |
 
@@ -514,13 +471,12 @@ lambda/
 | GSI | PK | SK | 용도 |
 |-----|----|----|------|
 | GSI1 | `EMAIL#<email>` | `USER#<userId>` | 이메일로 사용자 조회 |
-| GSI2 | `TOKEN#<tokenId>` | `TYPE#<Verify\|PwdReset\|Session>` | 토큰으로 아이템 조회 |
-| GSI3 | `ROLE#<roleName>` | `USER#<userId>` | 역할별 사용자 조회 |
+| GSI2 | `ROLE#<roleName>` | `USER#<userId>` | 역할별 사용자 조회 |
 
 ### 공통 속성
 
 * `createdAt`, `updatedAt`: ISO 8601
-* TTL 대상: 세션, 이메일 인증, 비밀번호 재설정 → `expiresAt` (epoch seconds)
+* TTL 대상: 세션 → `expiresAt` (epoch seconds)
 
 ### 예시 아이템
 
@@ -531,7 +487,6 @@ lambda/
   "SK": "PROFILE",
   "userId": "u_123",
   "email": "ryu@example.com",
-  "emailVerified": false,
   "passwordHash": "<bcrypt>",
   "displayName": "Ryu",
   "status": "active",
@@ -553,8 +508,6 @@ lambda/
   "ua": "Chrome 120, macOS",
   "createdAt": "2025-08-19T09:10:00Z",
   "expiresAt": 1766200000,
-  "GSI2PK": "TOKEN#s_abc",
-  "GSI2SK": "TYPE#Session",
   "TTL": 1766200000
 }
 ```
@@ -586,8 +539,6 @@ JWT 클레임:
 |------|------|------|
 | 액세스 토큰 | 15분 | JWT |
 | 리프레시 토큰/세션 | 14일 (환경변수 설정) | DynamoDB TTL 자동 만료 |
-| 이메일 인증 토큰 | 24시간 | DynamoDB TTL |
-| 비밀번호 재설정 토큰 | 1시간 | DynamoDB TTL |
 
 ---
 
@@ -624,8 +575,6 @@ JWT_EXPIRES_IN=900
 SESSION_TTL_DAYS=14
 DDB_TABLE=ums-main
 AWS_REGION=ap-northeast-2
-EMAIL_FROM=no-reply@example.com
-EMAIL_PROVIDER=stub
 FRONTEND_URL=http://localhost:5173
 ADMIN_FRONTEND_URL=http://localhost:5174
 ```
@@ -634,7 +583,7 @@ ADMIN_FRONTEND_URL=http://localhost:5174
 
 ## 성공 기준 (MVP)
 
-* 이메일 인증을 포함한 가입/로그인/로그아웃이 정상 동작
+* 가입/로그인/로그아웃이 정상 동작
 * 비밀번호 변경 및 재설정이 정상 동작
 * 회원 탈퇴 시 계정 비활성화 및 세션 전체 무효화
 * 토큰 갱신과 세션 관리(조회/종료)가 정상 동작
