@@ -1,0 +1,25 @@
+{
+  "name": "account-management-shared",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "./db": "./db/connection.js",
+    "./db/*": "./db/*.js",
+    "./models/*": "./models/*.js",
+    "./services/*": "./services/*.js",
+    "./middleware/*": "./middleware/*.js",
+    "./utils/*": "./utils/*.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.1"
+  }
+}

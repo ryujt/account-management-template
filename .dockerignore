@@ -1,0 +1,10 @@
+**/node_modules
+.git
+.omc
+data
+*.db
+.env
+.env.local
+dist
+**/.env
+!**/.env.example
