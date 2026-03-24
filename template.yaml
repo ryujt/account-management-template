@@ -1,0 +1,384 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Account Management Template - SAM Application
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures:
+      - x86_64
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref AccountManagementTable
+        AUDIT_TABLE_NAME: !Ref AuditLogTable
+        JWT_SECRET: !Ref JwtSecret
+        JWT_EXPIRES_IN: !Ref JwtExpiresIn
+        SESSION_TTL_DAYS: !Ref SessionTtlDays
+        FRONTEND_URL: !Ref FrontendUrl
+        ADMIN_FRONTEND_URL: !Ref AdminFrontendUrl
+        DYNAMODB_ENDPOINT: !Ref DynamoDbEndpoint
+        NODE_ENV: !Ref NodeEnv
+
+Parameters:
+  JwtSecret:
+    Type: String
+    Description: Secret key for JWT signing
+    NoEcho: true
+  JwtExpiresIn:
+    Type: Number
+    Description: JWT access token expiry in seconds
+    Default: 900
+  SessionTtlDays:
+    Type: Number
+    Description: Refresh token session TTL in days
+    Default: 14
+  FrontendUrl:
+    Type: String
+    Description: Frontend URL for CORS (UserApi)
+    Default: http://localhost:5173
+  AdminFrontendUrl:
+    Type: String
+    Description: Admin frontend URL for CORS (AdminApi)
+    Default: http://localhost:5174
+  DynamoDbEndpoint:
+    Type: String
+    Description: DynamoDB endpoint override (for local dev)
+    Default: ''
+  NodeEnv:
+    Type: String
+    Description: Node environment
+    Default: production
+    AllowedValues:
+      - production
+      - development
+      - test
+
+Resources:
+
+  # ------------------------------------------------------------------ #
+  #  DynamoDB Tables                                                     #
+  # ------------------------------------------------------------------ #
+
+  AccountManagementTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: AccountManagement
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI3PK
+          AttributeType: S
+        - AttributeName: GSI3SK
+          AttributeType: S
+        - AttributeName: GSI4PK
+          AttributeType: S
+        - AttributeName: GSI4SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI3
+          KeySchema:
+            - AttributeName: GSI3PK
+              KeyType: HASH
+            - AttributeName: GSI3SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI4
+          KeySchema:
+            - AttributeName: GSI4PK
+              KeyType: HASH
+            - AttributeName: GSI4SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  AuditLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: AccountManagement_AuditLog
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ------------------------------------------------------------------ #
+  #  Lambda Layer                                                        #
+  # ------------------------------------------------------------------ #
+
+  SharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: account-management-shared
+      Description: Shared business logic, models, and utilities
+      ContentUri: layers/shared/
+      CompatibleRuntimes:
+        - nodejs22.x
+      RetentionPolicy: Delete
+    Metadata:
+      BuildMethod: nodejs22.x
+
+  # ------------------------------------------------------------------ #
+  #  API Gateways                                                        #
+  # ------------------------------------------------------------------ #
+
+  UserApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowOrigin: !Sub "'${FrontendUrl}'"
+        AllowHeaders: "'Content-Type,Authorization,X-Requested-With'"
+        AllowMethods: "'GET,POST,PATCH,DELETE,OPTIONS'"
+        AllowCredentials: true
+
+  AdminApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowOrigin: !Sub "'${AdminFrontendUrl}'"
+        AllowHeaders: "'Content-Type,Authorization,X-Requested-With'"
+        AllowMethods: "'GET,POST,PATCH,DELETE,OPTIONS'"
+        AllowCredentials: true
+
+  # ------------------------------------------------------------------ #
+  #  Lambda Functions                                                    #
+  # ------------------------------------------------------------------ #
+
+  UserAuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: account-management-user-auth
+      CodeUri: functions/user-auth/
+      Handler: index.handler
+      Description: User authentication endpoints (register, login, refresh, logout, password reset)
+      Layers:
+        - !Ref SharedLayer
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountManagementTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditLogTable
+      Events:
+        RegisterPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /auth/register
+            Method: POST
+        LoginPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /auth/login
+            Method: POST
+        RefreshPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /auth/refresh
+            Method: POST
+        LogoutPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /auth/logout
+            Method: POST
+        PasswordResetPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /auth/password/reset
+            Method: POST
+
+  UserApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: account-management-user-api
+      CodeUri: functions/user-api/
+      Handler: index.handler
+      Description: User API endpoints (profile, sessions, password change, withdraw)
+      Layers:
+        - !Ref SharedLayer
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountManagementTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditLogTable
+      Events:
+        HealthGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /health
+            Method: GET
+        UserInfoGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /user/info
+            Method: GET
+        UserInfoPatch:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /user/info
+            Method: PATCH
+        ChangePasswordPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /user/changepw
+            Method: POST
+        SessionsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /user/sessions
+            Method: GET
+        SessionDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /user/sessions/{sessionId}
+            Method: DELETE
+        WithdrawPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref UserApi
+            Path: /user/withdraw
+            Method: POST
+
+  AdminApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: account-management-admin-api
+      CodeUri: functions/admin-api/
+      Handler: index.handler
+      Description: Admin API endpoints (user management, role management)
+      Layers:
+        - !Ref SharedLayer
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountManagementTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditLogTable
+      Events:
+        AdminAuthLoginPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /auth/login
+            Method: POST
+        AdminAuthRefreshPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /auth/refresh
+            Method: POST
+        AdminAuthLogoutPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /auth/logout
+            Method: POST
+        AdminUserInfoGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /user/info
+            Method: GET
+        AdminUsersGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /admin/users
+            Method: GET
+        AdminUserDetailGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /admin/users/{userId}
+            Method: GET
+        AdminUserPatch:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /admin/users/{userId}
+            Method: PATCH
+        AdminUserRolesPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /admin/users/{userId}/roles
+            Method: POST
+        AdminUserRoleDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /admin/users/{userId}/roles/{role}
+            Method: DELETE
+        AdminHealthGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AdminApi
+            Path: /health
+            Method: GET
+
+Outputs:
+  UserApiUrl:
+    Description: User API Gateway endpoint URL
+    Value: !Sub 'https://${UserApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/'
+  AdminApiUrl:
+    Description: Admin API Gateway endpoint URL
+    Value: !Sub 'https://${AdminApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/'
+  UserAuthFunctionArn:
+    Description: User Auth Lambda Function ARN
+    Value: !GetAtt UserAuthFunction.Arn
+  UserApiFunctionArn:
+    Description: User API Lambda Function ARN
+    Value: !GetAtt UserApiFunction.Arn
+  AdminApiFunctionArn:
+    Description: Admin API Lambda Function ARN
+    Value: !GetAtt AdminApiFunction.Arn
+  AccountManagementTableName:
+    Description: DynamoDB main table name
+    Value: !Ref AccountManagementTable
+  AuditLogTableName:
+    Description: DynamoDB audit log table name
+    Value: !Ref AuditLogTable

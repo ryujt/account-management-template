@@ -1,0 +1,36 @@
+# SAM CLI configuration file
+# https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-config.html
+
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "account-management"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "account-management"
+region = "us-east-1"
+image_repositories = []
+parameter_overrides = [
+  "JwtSecret=CHANGE_ME_IN_PRODUCTION",
+  "FrontendUrl=https://your-frontend-domain.com",
+  "AdminFrontendUrl=https://your-admin-domain.com",
+  "NodeEnv=production"
+]
+
+[default.local_start_api.parameters]
+warm_containers = "EAGER"
+env_vars = "env.json"
+
+[default.local_invoke.parameters]
+env_vars = "env.json"
+
+[default.validate.parameters]
+lint = true

@@ -1,0 +1,6 @@
+{
+  "name": "user-auth-function",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "User authentication Lambda function"
+}

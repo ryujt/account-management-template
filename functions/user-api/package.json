@@ -1,0 +1,6 @@
+{
+  "name": "user-api-function",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "User API Lambda function"
+}

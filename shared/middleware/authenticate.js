@@ -4,7 +4,7 @@ import { UnauthorizedError } from '../utils/errors.js';
 /**
  * Express middleware: extract Bearer token, verify JWT, attach req.user.
  *
- * Requires `req.app.get('jwtSecret')` to be set on the Express app.
+ * Reads JWT secret from req.app.get('jwtSecret') or process.env.JWT_SECRET.
  */
 export function authenticate(req, _res, next) {
   const header = req.headers.authorization;
@@ -13,7 +13,7 @@ export function authenticate(req, _res, next) {
   }
 
   const token = header.slice(7);
-  const secret = req.app.get('jwtSecret');
+  const secret = (req.app && req.app.get('jwtSecret')) || process.env.JWT_SECRET;
 
   try {
     const decoded = verifyAccessToken(token, secret);

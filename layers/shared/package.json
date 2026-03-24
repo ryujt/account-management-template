@@ -1,0 +1,10 @@
+{
+  "name": "account-management-shared-layer",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Lambda layer packaging the account-management-shared package",
+  "dependencies": {
+    "account-management-shared": "file:../../shared",
+    "zod": "^3.23.0"
+  }
+}

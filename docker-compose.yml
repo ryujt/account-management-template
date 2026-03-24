@@ -1,39 +1,15 @@
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: docker/backend.Dockerfile
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
     ports:
-      - "3000:3000"
-    environment:
-      PORT: 3000
-      NODE_ENV: production
-      JWT_SECRET: docker-dev-secret-change-me
-      JWT_EXPIRES_IN: 900
-      SESSION_TTL_DAYS: 14
-      DB_PATH: /data/app.db
-      FRONTEND_URL: http://localhost:5173
-    volumes:
-      - db-data:/data
+      - "8000:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
     restart: unless-stopped
-
-  backend-admin:
-    build:
-      context: .
-      dockerfile: docker/backend-admin.Dockerfile
-    ports:
-      - "3001:3001"
-    environment:
-      PORT: 3001
-      NODE_ENV: production
-      JWT_SECRET: docker-dev-secret-change-me
-      JWT_EXPIRES_IN: 900
-      SESSION_TTL_DAYS: 14
-      DB_PATH: /data/app.db
-      ADMIN_FRONTEND_URL: http://localhost:5174
-    volumes:
-      - db-data:/data
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/shell/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   frontend:
     build:
@@ -43,8 +19,6 @@ services:
         VITE_API_URL: http://localhost:3000
     ports:
       - "5173:80"
-    depends_on:
-      - backend
     restart: unless-stopped
 
   admin:
@@ -55,9 +29,4 @@ services:
         VITE_API_URL: http://localhost:3001
     ports:
       - "5174:80"
-    depends_on:
-      - backend-admin
     restart: unless-stopped
-
-volumes:
-  db-data:

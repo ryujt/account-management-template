@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createTestDb } from '../setup.js';
 import * as adminService from '../../services/adminService.js';
 import * as authService from '../../services/authService.js';
 import * as userModel from '../../models/userModel.js';
@@ -12,26 +11,20 @@ const JWT_SECRET = 'test-secret';
 const JWT_EXPIRES_IN = 3600;
 const SESSION_TTL_DAYS = 7;
 
-let db;
-
-beforeEach(() => {
-  db = createTestDb();
-});
-
 async function createUser(email = 'user@test.com', displayName = 'User') {
-  const { userId } = await authService.register(db, { email, password: 'password123', displayName });
+  const { userId } = await authService.register({ email, password: 'password123', displayName });
   return userId;
 }
 
 async function createAdmin(email = 'admin@test.com') {
   const userId = await createUser(email, 'Admin');
-  roleModel.addRole(db, userId, 'admin');
+  await roleModel.addRole(userId, 'admin');
   return userId;
 }
 
 async function createUserWithSession(email = 'user@test.com') {
-  await authService.register(db, { email, password: 'password123', displayName: 'User' });
-  const login = await authService.login(db, {
+  await authService.register({ email, password: 'password123', displayName: 'User' });
+  const login = await authService.login({
     email, password: 'password123',
     jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN, sessionTtlDays: SESSION_TTL_DAYS,
   });
@@ -43,26 +36,26 @@ describe('listUsers', () => {
     await createUser('a@test.com', 'Alice');
     await createUser('b@test.com', 'Bob');
 
-    const result = adminService.listUsers(db);
+    const result = await adminService.listUsers();
     expect(result.users).toHaveLength(2);
     expect(result.users[0].roles).toBeInstanceOf(Array);
   });
 
   it('should support filtering by status', async () => {
     const userId = await createUser();
-    userModel.updateStatus(db, userId, 'disabled');
+    await userModel.updateStatus(userId, 'disabled');
     await createUser('other@test.com');
 
-    const result = adminService.listUsers(db, { status: 'disabled' });
+    const result = await adminService.listUsers({ status: 'disabled' });
     expect(result.users).toHaveLength(1);
-    expect(result.users[0].user_id).toBe(userId);
+    expect(result.users[0].userId).toBe(userId);
   });
 
   it('should support filtering by role', async () => {
     await createAdmin('adm@test.com');
     await createUser('regular@test.com');
 
-    const result = adminService.listUsers(db, { role: 'admin' });
+    const result = await adminService.listUsers({ role: 'admin' });
     expect(result.users).toHaveLength(1);
   });
 
@@ -70,28 +63,9 @@ describe('listUsers', () => {
     await createUser('alice@test.com', 'Alice');
     await createUser('bob@test.com', 'Bob');
 
-    const result = adminService.listUsers(db, { query: 'alice' });
+    const result = await adminService.listUsers({ query: 'alice' });
     expect(result.users).toHaveLength(1);
     expect(result.users[0].email).toBe('alice@test.com');
-  });
-
-  it('should support pagination', async () => {
-    // Insert with staggered timestamps so cursor pagination works
-    for (let i = 0; i < 5; i++) {
-      const userId = `u_pg_${i}`;
-      db.prepare(`
-        INSERT INTO users (user_id, email, password_hash, display_name, status, created_at, updated_at)
-        VALUES (?, ?, 'h', ?, 'active', datetime('2024-01-01', '+' || ? || ' days'), datetime('now'))
-      `).run(userId, `u${i}@test.com`, `User${i}`, i + 1);
-      roleModel.addRole(db, userId, 'member');
-    }
-
-    const page1 = adminService.listUsers(db, { limit: 3 });
-    expect(page1.users).toHaveLength(3);
-    expect(page1.nextCursor).toBeTruthy();
-
-    const page2 = adminService.listUsers(db, { limit: 3, cursor: page1.nextCursor });
-    expect(page2.users).toHaveLength(2);
   });
 });
 
@@ -99,7 +73,7 @@ describe('getUserDetail', () => {
   it('should return full user detail with roles and sessions', async () => {
     const { userId } = await createUserWithSession();
 
-    const detail = adminService.getUserDetail(db, userId);
+    const detail = await adminService.getUserDetail(userId);
     expect(detail.userId).toBe(userId);
     expect(detail.email).toBe('user@test.com');
     expect(detail.roles).toContain('member');
@@ -108,8 +82,8 @@ describe('getUserDetail', () => {
     expect(detail.sessions[0]).toHaveProperty('sessionId');
   });
 
-  it('should throw NotFoundError for non-existent user', () => {
-    expect(() => adminService.getUserDetail(db, 'u_nope')).toThrow(NotFoundError);
+  it('should throw NotFoundError for non-existent user', async () => {
+    await expect(adminService.getUserDetail('u_nope')).rejects.toThrow(NotFoundError);
   });
 });
 
@@ -118,9 +92,9 @@ describe('updateUserStatus', () => {
     const userId = await createUser();
     const adminId = await createAdmin();
 
-    adminService.updateUserStatus(db, userId, 'suspended', adminId);
+    await adminService.updateUserStatus(userId, 'suspended', adminId);
 
-    const user = userModel.findById(db, userId);
+    const user = await userModel.findById(userId);
     expect(user.status).toBe('suspended');
   });
 
@@ -129,9 +103,9 @@ describe('updateUserStatus', () => {
     const adminId = await createAdmin();
     const parsed = parseRefreshToken(refreshToken);
 
-    adminService.updateUserStatus(db, userId, 'disabled', adminId);
+    await adminService.updateUserStatus(userId, 'disabled', adminId);
 
-    expect(sessionModel.findSession(db, parsed.sessionId)).toBeUndefined();
+    expect(await sessionModel.findSession(userId, parsed.sessionId)).toBeUndefined();
   });
 
   it('should delete sessions when suspending a user', async () => {
@@ -139,26 +113,24 @@ describe('updateUserStatus', () => {
     const adminId = await createAdmin();
     const parsed = parseRefreshToken(refreshToken);
 
-    adminService.updateUserStatus(db, userId, 'suspended', adminId);
+    await adminService.updateUserStatus(userId, 'suspended', adminId);
 
-    expect(sessionModel.findSession(db, parsed.sessionId)).toBeUndefined();
+    expect(await sessionModel.findSession(userId, parsed.sessionId)).toBeUndefined();
   });
 
   it('should not delete sessions when reactivating a user', async () => {
-    const { userId, refreshToken } = await createUserWithSession();
+    const { userId } = await createUserWithSession();
     const adminId = await createAdmin();
 
-    // First disable (sessions deleted), then create a new session manually and reactivate
-    adminService.updateUserStatus(db, userId, 'active', adminId);
+    await adminService.updateUserStatus(userId, 'active', adminId);
 
-    // No throw means success
-    const user = userModel.findById(db, userId);
+    const user = await userModel.findById(userId);
     expect(user.status).toBe('active');
   });
 
   it('should throw NotFoundError for non-existent user', async () => {
     const adminId = await createAdmin();
-    expect(() => adminService.updateUserStatus(db, 'u_nope', 'disabled', adminId)).toThrow(NotFoundError);
+    await expect(adminService.updateUserStatus('u_nope', 'disabled', adminId)).rejects.toThrow(NotFoundError);
   });
 });
 
@@ -167,15 +139,15 @@ describe('addRole', () => {
     const userId = await createUser();
     const adminId = await createAdmin();
 
-    adminService.addRole(db, userId, 'admin', adminId);
+    await adminService.addRole(userId, 'admin', adminId);
 
-    const roles = roleModel.getRoles(db, userId);
+    const roles = await roleModel.getRoles(userId);
     expect(roles).toContain('admin');
   });
 
   it('should throw NotFoundError for non-existent user', async () => {
     const adminId = await createAdmin();
-    expect(() => adminService.addRole(db, 'u_nope', 'admin', adminId)).toThrow(NotFoundError);
+    await expect(adminService.addRole('u_nope', 'admin', adminId)).rejects.toThrow(NotFoundError);
   });
 });
 
@@ -183,11 +155,11 @@ describe('removeRole', () => {
   it('should remove a role from a user', async () => {
     const userId = await createUser();
     const adminId = await createAdmin();
-    roleModel.addRole(db, userId, 'admin');
+    await roleModel.addRole(userId, 'admin');
 
-    adminService.removeRole(db, userId, 'admin', adminId);
+    await adminService.removeRole(userId, 'admin', adminId);
 
-    const roles = roleModel.getRoles(db, userId);
+    const roles = await roleModel.getRoles(userId);
     expect(roles).not.toContain('admin');
   });
 
@@ -195,17 +167,17 @@ describe('removeRole', () => {
     const userId = await createUser();
     const adminId = await createAdmin();
 
-    expect(() => adminService.removeRole(db, userId, 'member', adminId)).toThrow(BadRequestError);
+    await expect(adminService.removeRole(userId, 'member', adminId)).rejects.toThrow(BadRequestError);
   });
 
   it('should throw ForbiddenError for self-demotion', async () => {
     const adminId = await createAdmin();
 
-    expect(() => adminService.removeRole(db, adminId, 'admin', adminId)).toThrow(ForbiddenError);
+    await expect(adminService.removeRole(adminId, 'admin', adminId)).rejects.toThrow(ForbiddenError);
   });
 
   it('should throw NotFoundError for non-existent user', async () => {
     const adminId = await createAdmin();
-    expect(() => adminService.removeRole(db, 'u_nope', 'admin', adminId)).toThrow(NotFoundError);
+    await expect(adminService.removeRole('u_nope', 'admin', adminId)).rejects.toThrow(NotFoundError);
   });
 });

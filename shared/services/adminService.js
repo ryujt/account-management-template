@@ -6,17 +6,23 @@ import * as auditModel from '../models/auditModel.js';
 
 /**
  * List users with optional filters and cursor pagination.
+ * Roles are already embedded in the PROFILE item (denormalized).
  *
- * @param {import('better-sqlite3').Database} db
  * @param {{ query?: string, role?: string, status?: string, cursor?: string, limit?: number }} opts
+ * @returns {Promise<{ users: object[], nextCursor: string|null }>}
  */
-export function listUsers(db, { query, role, status, cursor, limit = 20 } = {}) {
-  const result = userModel.listUsers(db, { query, role, status, cursor, limit });
+export async function listUsers({ query, role, status, cursor, limit = 20 } = {}) {
+  const result = await userModel.listUsers({ query, role, status, cursor, limit });
 
-  // Attach roles to each user
+  // Roles are already in the item - no N+1 query needed
   const users = result.users.map((u) => ({
-    ...u,
-    roles: roleModel.getRoles(db, u.user_id),
+    userId: u.userId,
+    email: u.email,
+    displayName: u.displayName,
+    status: u.status,
+    roles: u.roles ?? [],
+    createdAt: u.createdAt,
+    updatedAt: u.updatedAt,
   }));
 
   return { users, nextCursor: result.nextCursor };
@@ -25,60 +31,57 @@ export function listUsers(db, { query, role, status, cursor, limit = 20 } = {}) 
 /**
  * Get detailed info about a single user (profile + roles + sessions).
  *
- * @param {import('better-sqlite3').Database} db
  * @param {string} userId
+ * @returns {Promise<object>}
  */
-export function getUserDetail(db, userId) {
-  const user = userModel.findById(db, userId);
+export async function getUserDetail(userId) {
+  const [user, sessions] = await Promise.all([
+    userModel.findById(userId),
+    sessionModel.getUserSessions(userId),
+  ]);
+
   if (!user) {
     throw new NotFoundError('User not found');
   }
 
-  const roles = roleModel.getRoles(db, userId);
-  const sessions = sessionModel.getUserSessions(db, userId);
-
   return {
-    userId: user.user_id,
+    userId: user.userId,
     email: user.email,
-    displayName: user.display_name,
+    displayName: user.displayName,
     status: user.status,
-    roles,
+    roles: user.roles ?? [],
     sessions: sessions.map((s) => ({
-      sessionId: s.session_id,
+      sessionId: s.sessionId,
       ip: s.ip,
       ua: s.ua,
-      createdAt: s.created_at,
-      expiresAt: s.expires_at,
+      createdAt: s.createdAt,
+      expiresAt: s.expiresAt,
     })),
-    createdAt: user.created_at,
-    updatedAt: user.updated_at,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
   };
 }
 
 /**
  * Update a user's status. If disabled or suspended, kill all their sessions.
  *
- * @param {import('better-sqlite3').Database} db
  * @param {string} userId
  * @param {string} status
  * @param {string} adminUserId
  */
-export function updateUserStatus(db, userId, status, adminUserId) {
-  const user = userModel.findById(db, userId);
+export async function updateUserStatus(userId, status, adminUserId) {
+  const user = await userModel.findById(userId);
   if (!user) {
     throw new NotFoundError('User not found');
   }
 
-  const tx = db.transaction(() => {
-    userModel.updateStatus(db, userId, status);
+  await userModel.updateStatus(userId, status);
 
-    if (status === 'disabled' || status === 'suspended') {
-      sessionModel.deleteUserSessions(db, userId);
-    }
-  });
-  tx();
+  if (status === 'disabled' || status === 'suspended') {
+    await sessionModel.deleteUserSessions(userId);
+  }
 
-  auditModel.writeAudit(db, {
+  await auditModel.writeAudit({
     action: 'admin.update_status',
     actorId: adminUserId,
     targetId: userId,
@@ -89,20 +92,19 @@ export function updateUserStatus(db, userId, status, adminUserId) {
 /**
  * Add a role to a user.
  *
- * @param {import('better-sqlite3').Database} db
  * @param {string} userId
  * @param {string} role
  * @param {string} adminUserId
  */
-export function addRole(db, userId, role, adminUserId) {
-  const user = userModel.findById(db, userId);
+export async function addRole(userId, role, adminUserId) {
+  const user = await userModel.findById(userId);
   if (!user) {
     throw new NotFoundError('User not found');
   }
 
-  roleModel.addRole(db, userId, role);
+  await roleModel.addRole(userId, role);
 
-  auditModel.writeAudit(db, {
+  await auditModel.writeAudit({
     action: 'admin.add_role',
     actorId: adminUserId,
     targetId: userId,
@@ -114,12 +116,11 @@ export function addRole(db, userId, role, adminUserId) {
  * Remove a role from a user.
  * Prevents self-demotion and removal of the 'member' base role.
  *
- * @param {import('better-sqlite3').Database} db
  * @param {string} userId
  * @param {string} role
  * @param {string} adminUserId
  */
-export function removeRole(db, userId, role, adminUserId) {
+export async function removeRole(userId, role, adminUserId) {
   if (role === 'member') {
     throw new BadRequestError('Cannot remove the member role');
   }
@@ -128,14 +129,14 @@ export function removeRole(db, userId, role, adminUserId) {
     throw new ForbiddenError('Cannot demote yourself');
   }
 
-  const user = userModel.findById(db, userId);
+  const user = await userModel.findById(userId);
   if (!user) {
     throw new NotFoundError('User not found');
   }
 
-  roleModel.removeRole(db, userId, role);
+  await roleModel.removeRole(userId, role);
 
-  auditModel.writeAudit(db, {
+  await auditModel.writeAudit({
     action: 'admin.remove_role',
     actorId: adminUserId,
     targetId: userId,

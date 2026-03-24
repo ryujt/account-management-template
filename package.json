@@ -1,0 +1,20 @@
+{
+  "name": "account-management-template",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Account management template with user auth, user API, and admin API",
+  "scripts": {
+    "setup": "docker compose up -d dynamodb-local && node scripts/create-tables.js && node scripts/seed-admin.js",
+    "dev": "node scripts/local-server.js",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:admin": "cd admin && npm run dev",
+    "build": "sam build",
+    "start:sam": "sam local start-api --env-vars env.json"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "express": "^4.18.0",
+    "cookie-parser": "^1.4.6",
+    "zod": "^3.23.0"
+  }
+}

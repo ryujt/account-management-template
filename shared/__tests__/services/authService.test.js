@@ -1,31 +1,22 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createTestDb } from '../setup.js';
 import * as authService from '../../services/authService.js';
 import * as userModel from '../../models/userModel.js';
-import * as roleModel from '../../models/roleModel.js';
 import * as sessionModel from '../../models/sessionModel.js';
-import { hashPassword } from '../../utils/password.js';
 import { verifyAccessToken } from '../../utils/jwt.js';
-import { parseRefreshToken, hashRefreshToken } from '../../utils/token.js';
+import { parseRefreshToken } from '../../utils/token.js';
 import { ConflictError, UnauthorizedError } from '../../utils/errors.js';
 
 const JWT_SECRET = 'test-secret';
 const JWT_EXPIRES_IN = 3600;
 const SESSION_TTL_DAYS = 7;
 
-let db;
-
-beforeEach(() => {
-  db = createTestDb();
-});
-
 async function registerUser(email = 'test@example.com', password = 'password123') {
-  return authService.register(db, { email, password, displayName: 'Test User' });
+  return authService.register({ email, password, displayName: 'Test User' });
 }
 
 async function registerAndLogin(email = 'test@example.com', password = 'password123') {
   await registerUser(email, password);
-  return authService.login(db, {
+  return authService.login({
     email,
     password,
     jwtSecret: JWT_SECRET,
@@ -39,12 +30,10 @@ describe('register', () => {
     const result = await registerUser();
     expect(result.userId).toMatch(/^u_/);
 
-    const user = userModel.findByEmail(db, 'test@example.com');
+    const user = await userModel.findByEmail('test@example.com');
     expect(user).toBeTruthy();
-    expect(user.display_name).toBe('Test User');
-
-    const roles = roleModel.getRoles(db, result.userId);
-    expect(roles).toEqual(['member']);
+    expect(user.displayName).toBe('Test User');
+    expect(user.roles).toContain('member');
   });
 
   it('should throw ConflictError for duplicate email', async () => {
@@ -74,14 +63,14 @@ describe('login', () => {
   it('should create a session in the database', async () => {
     const result = await registerAndLogin();
     const parsed = parseRefreshToken(result.refreshToken);
-    const session = sessionModel.findSession(db, parsed.sessionId);
+    const session = await sessionModel.findSession(result.user.userId, parsed.sessionId);
     expect(session).toBeTruthy();
-    expect(session.user_id).toBe(result.user.userId);
+    expect(session.userId).toBe(result.user.userId);
   });
 
   it('should throw UnauthorizedError for non-existent email', async () => {
     await expect(
-      authService.login(db, {
+      authService.login({
         email: 'nope@test.com', password: 'x',
         jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN, sessionTtlDays: SESSION_TTL_DAYS,
       }),
@@ -91,7 +80,7 @@ describe('login', () => {
   it('should throw UnauthorizedError for wrong password', async () => {
     await registerUser();
     await expect(
-      authService.login(db, {
+      authService.login({
         email: 'test@example.com', password: 'wrong',
         jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN, sessionTtlDays: SESSION_TTL_DAYS,
       }),
@@ -100,10 +89,10 @@ describe('login', () => {
 
   it('should throw UnauthorizedError for disabled user', async () => {
     const { userId } = await registerUser();
-    userModel.updateStatus(db, userId, 'disabled');
+    await userModel.updateStatus(userId, 'disabled');
 
     await expect(
-      authService.login(db, {
+      authService.login({
         email: 'test@example.com', password: 'password123',
         jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN, sessionTtlDays: SESSION_TTL_DAYS,
       }),
@@ -115,7 +104,7 @@ describe('refresh', () => {
   it('should return new accessToken and rotated refreshToken', async () => {
     const loginResult = await registerAndLogin();
 
-    const result = authService.refresh(db, {
+    const result = await authService.refresh({
       refreshTokenCookie: loginResult.refreshToken,
       jwtSecret: JWT_SECRET,
       jwtExpiresIn: JWT_EXPIRES_IN,
@@ -126,55 +115,59 @@ describe('refresh', () => {
     expect(result.refreshToken).not.toBe(loginResult.refreshToken);
 
     // Old refresh token should no longer work (hash was rotated)
-    expect(() =>
-      authService.refresh(db, {
+    await expect(
+      authService.refresh({
         refreshTokenCookie: loginResult.refreshToken,
         jwtSecret: JWT_SECRET,
         jwtExpiresIn: JWT_EXPIRES_IN,
       }),
-    ).toThrow(UnauthorizedError);
+    ).rejects.toThrow(UnauthorizedError);
   });
 
-  it('should throw UnauthorizedError for missing refresh token', () => {
-    expect(() =>
-      authService.refresh(db, { refreshTokenCookie: '', jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN }),
-    ).toThrow(UnauthorizedError);
+  it('should throw UnauthorizedError for missing refresh token', async () => {
+    await expect(
+      authService.refresh({ refreshTokenCookie: '', jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN }),
+    ).rejects.toThrow(UnauthorizedError);
   });
 
-  it('should throw UnauthorizedError for invalid format', () => {
-    expect(() =>
-      authService.refresh(db, { refreshTokenCookie: 'garbage', jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN }),
-    ).toThrow(UnauthorizedError);
+  it('should throw UnauthorizedError for invalid format', async () => {
+    await expect(
+      authService.refresh({ refreshTokenCookie: 'garbage', jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN }),
+    ).rejects.toThrow(UnauthorizedError);
   });
 
   it('should throw UnauthorizedError for expired session', async () => {
     const loginResult = await registerAndLogin();
     const parsed = parseRefreshToken(loginResult.refreshToken);
 
-    // Manually set session to expired
-    db.prepare('UPDATE sessions SET expires_at = ? WHERE session_id = ?')
-      .run(Math.floor(Date.now() / 1000) - 1, parsed.sessionId);
+    // Manually set session to expired by updating the mock store
+    const { mockDocClient: client } = await import('../mockClient.js');
+    const sessionKey = `USER#${parsed.userId}\x00SESSION#${parsed.sessionId}`;
+    const session = client.tables.get('TestTable')?.get(sessionKey);
+    if (session) {
+      session.expiresAt = Math.floor(Date.now() / 1000) - 1;
+    }
 
-    expect(() =>
-      authService.refresh(db, {
+    await expect(
+      authService.refresh({
         refreshTokenCookie: loginResult.refreshToken,
         jwtSecret: JWT_SECRET,
         jwtExpiresIn: JWT_EXPIRES_IN,
       }),
-    ).toThrow(UnauthorizedError);
+    ).rejects.toThrow(UnauthorizedError);
   });
 
   it('should throw UnauthorizedError when user is no longer active', async () => {
     const loginResult = await registerAndLogin();
-    userModel.updateStatus(db, loginResult.user.userId, 'disabled');
+    await userModel.updateStatus(loginResult.user.userId, 'disabled');
 
-    expect(() =>
-      authService.refresh(db, {
+    await expect(
+      authService.refresh({
         refreshTokenCookie: loginResult.refreshToken,
         jwtSecret: JWT_SECRET,
         jwtExpiresIn: JWT_EXPIRES_IN,
       }),
-    ).toThrow(UnauthorizedError);
+    ).rejects.toThrow(UnauthorizedError);
   });
 });
 
@@ -183,9 +176,9 @@ describe('logout', () => {
     const loginResult = await registerAndLogin();
     const parsed = parseRefreshToken(loginResult.refreshToken);
 
-    authService.logout(db, { sessionId: parsed.sessionId });
+    await authService.logout({ userId: loginResult.user.userId, sessionId: parsed.sessionId });
 
-    expect(sessionModel.findSession(db, parsed.sessionId)).toBeUndefined();
+    expect(await sessionModel.findSession(loginResult.user.userId, parsed.sessionId)).toBeUndefined();
   });
 });
 
@@ -193,14 +186,14 @@ describe('resetPassword', () => {
   it('should update password and kill all sessions', async () => {
     const loginResult = await registerAndLogin();
 
-    await authService.resetPassword(db, { email: 'test@example.com', newPassword: 'newpass123' });
+    await authService.resetPassword({ email: 'test@example.com', newPassword: 'newpass123' });
 
     // Old sessions should be gone
     const parsed = parseRefreshToken(loginResult.refreshToken);
-    expect(sessionModel.findSession(db, parsed.sessionId)).toBeUndefined();
+    expect(await sessionModel.findSession(loginResult.user.userId, parsed.sessionId)).toBeUndefined();
 
     // Should be able to login with new password
-    const result = await authService.login(db, {
+    const result = await authService.login({
       email: 'test@example.com', password: 'newpass123',
       jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN, sessionTtlDays: SESSION_TTL_DAYS,
     });
@@ -209,7 +202,7 @@ describe('resetPassword', () => {
 
   it('should silently return for non-existent email', async () => {
     await expect(
-      authService.resetPassword(db, { email: 'nope@test.com', newPassword: 'newpass' }),
+      authService.resetPassword({ email: 'nope@test.com', newPassword: 'newpass' }),
     ).resolves.toBeUndefined();
   });
 });
