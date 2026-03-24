@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as authApi from '../api/auth';
+import * as userApi from '../api/user';
 
 export const useAuthStore = create((set, get) => ({
   user: null,
@@ -56,9 +57,17 @@ export const useAuthStore = create((set, get) => ({
 
   initialize: async () => {
     try {
-      await get().refresh();
+      const data = await authApi.refresh();
+      set({ accessToken: data.accessToken });
+
+      const userInfo = await userApi.getProfile();
+      set({
+        user: userInfo,
+        isAuthenticated: true,
+        isLoading: false,
+      });
     } catch {
-      // already cleared in refresh
+      set({ user: null, accessToken: null, isAuthenticated: false, isLoading: false });
     }
   },
 }));

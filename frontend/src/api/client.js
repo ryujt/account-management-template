@@ -59,8 +59,11 @@ client.interceptors.response.use(
         { withCredentials: true },
       );
 
-      const { accessToken, user } = data;
-      useAuthStore.getState().setAuth(user, accessToken);
+      const { accessToken } = data;
+      // Refresh only returns accessToken, not user data.
+      // Update the token; user data is preserved from the original login/initialize.
+      const store = useAuthStore.getState();
+      store.setAuth(store.user, accessToken);
       processQueue(null, accessToken);
 
       originalRequest.headers.Authorization = `Bearer ${accessToken}`;
