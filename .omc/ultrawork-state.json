@@ -1,7 +1,0 @@
-{
-  "active": true,
-  "started_at": "2026-03-24T05:22:05.578Z",
-  "original_prompt": "autopilot ulw ralph\n토큰 사용은 최대한 활용해서 여러 번 반복 검증하고 문제점을 스스로 해결해서 끝까지 작업해줘.\n\n* 더 다양한 테스트 케이스를 찾아내서 테스트하고 수정해줘.\n\n",
-  "reinforcement_count": 3,
-  "last_checked_at": "2026-03-24T06:37:45.032Z"
-}
