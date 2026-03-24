@@ -6,10 +6,49 @@ services:
     command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/shell/ || exit 1"]
-      interval: 10s
+      test: ["CMD-SHELL", "curl -s -X POST http://localhost:8000/ -H 'Content-Type: application/x-amz-json-1.0' -H 'X-Amz-Target: DynamoDB_20120810.ListTables' -H 'Authorization: AWS4-HMAC-SHA256 Credential=local/20200101/us-east-1/dynamodb/aws4_request, SignedHeaders=host, Signature=dummy' -d '{}' | grep -q TableNames"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 5s
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - TABLE_NAME=AccountManagement
+      - AUDIT_TABLE_NAME=AccountManagement_AuditLog
+      - JWT_SECRET=docker-dev-secret-change-me
+      - JWT_EXPIRES_IN=900
+      - SESSION_TTL_DAYS=14
+      - FRONTEND_URL=http://localhost:5173
+      - ADMIN_FRONTEND_URL=http://localhost:5174
+      - NODE_ENV=development
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    restart: unless-stopped
+
+  setup:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    environment:
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - TABLE_NAME=AccountManagement
+      - AUDIT_TABLE_NAME=AccountManagement_AuditLog
+      - NODE_ENV=development
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    command: >
+      sh -c "node scripts/create-tables.js && node scripts/seed-admin.js"
+    restart: "no"
 
   frontend:
     build:
@@ -19,6 +58,8 @@ services:
         VITE_API_URL: http://localhost:3000
     ports:
       - "5173:80"
+    depends_on:
+      - backend
     restart: unless-stopped
 
   admin:
@@ -29,4 +70,6 @@ services:
         VITE_API_URL: http://localhost:3001
     ports:
       - "5174:80"
+    depends_on:
+      - backend
     restart: unless-stopped
