@@ -1,0 +1,7 @@
+{
+  "active": true,
+  "started_at": "2026-03-24T02:32:40.001Z",
+  "original_prompt": "autopilot ulw ralph\n토큰 사용은 최대한 활용해서 여러 번 반복 검증하고 문제점을 스스로 해결해서 끝까지 작업해줘.\n\n/Users/ryu/projects/personal/account-management-template/docs/PRD.md를 아래 요구사항에 맞춰 수정 및 개선해줘.\n\n* 백엔드는 람다 함수 하나로 작성한다. 각 요청 API 마다 경로로 구별\n  * GET /user/info\n  * POST /user/changepw\n* 람다는 nodejs 24.x 버전으로 작성\n* 프론트는 react.js로 작성한다.\n\n앞으로 만들 다양한 프로젝트에서 사용자 관련 코드를 중복해서 개발하지 않고 이 저장소의 코드를 템플릿처럼 사용하고자 한다.\n* 회원가입/탈퇴\n* 로그인/로그아웃\n* 그 밖에 대부분의 서비스 사이트에서 공통으로 사용되는 기능들을 구현하면 된다.",
+  "reinforcement_count": 3,
+  "last_checked_at": "2026-03-24T02:36:21.741Z"
+}
